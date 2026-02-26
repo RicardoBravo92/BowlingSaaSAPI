@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #333; line-height: 1.6; }
+        .container { width: 80%; margin: 20px auto; padding: 20px; border: 1px solid #eee; border-radius: 10px; }
+        .header { background: #6366f1; color: white; padding: 10px 20px; border-radius: 10px 10px 0 0; text-align: center; }
+        .footer { font-size: 0.8em; color: #777; margin-top: 20px; text-align: center; }
+        .info-box { background: #f9fafb; padding: 15px; border-radius: 5px; margin: 15px 0; border: 1px solid #e5e7eb; }
+        .price { font-size: 1.2em; color: #111827; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Booking Confirmed!</h1>
+        </div>
+        <p>Hello <strong>{{ full_name }}</strong>,</p>
+        <p>We are excited to confirm your reservation. Here are the details:</p>
+        
+        <div class="info-box">
+            <p><strong>Date:</strong> {{ booking_date }}</p>
+            <p><strong>Lane:</strong> #{{ lane_number }}</p>
+            <p><strong>Booking ID:</strong> {{ booking_id }}</p>
+            <p class="price"><strong>Total Paid:</strong> ${{ total_price }}</p>
+        </div>
+
+        <p>See you at the lanes!</p>
+        
+        <div class="footer">
+            <p>&copy; 2026 Bowling SaaS. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
