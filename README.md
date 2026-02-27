@@ -11,7 +11,6 @@ A robust, asynchronous FastAPI backend for a Bowling Alley management system. Bu
 - **Asynchronous Stack**: Powered by `FastAPI` and `asyncpg` for high performance.
 - **Professional Logging**: Structured logging system for better error tracking and audit trails.
 - **Database Migrations**: Managed via `Alembic` for safe schema evolution.
-- **Neon PostgreSQL Support**: Configured for Neon's serverless Postgres with SSL support.
 
 ## 🛠️ Tech Stack
 
@@ -65,10 +64,23 @@ A robust, asynchronous FastAPI backend for a Bowling Alley management system. Bu
 Start the development server with hot-reload:
 
 ```bash
-uv run uvicorn main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
+
+### 🐳 Running with Docker
+
+This project is fully containerized and optimized to build using `uv`. To run the application alongside an instance of PostgreSQL in Docker:
+
+1. Make sure you have Docker and Docker Compose installed.
+2. Ensure your `.env` file is properly configured (the database credentials will be taken from here).
+3. Build and run the containers:
+   ```bash
+   docker-compose up --build
+   ```
+
+The application will be exposed on port `8000` and the database on port `5432`.
 
 ## 📖 API Documentation
 
