@@ -5,19 +5,15 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# For asyncpg, especially with Neon, we might need to handle the sslmode parameter
-# because asyncpg uses 'ssl' instead of 'sslmode'
+
 engine_kwargs = {
     "echo": True,
     "future": True
 }
 
 if "postgresql+asyncpg" in settings.DATABASE_URL:
-    # If using Neon/Postgres with sslmode, we filter it and pass via connect_args
-    # This prevents the "Unexpected keyword argument 'sslmode'" error
     if "sslmode" in settings.DATABASE_URL:
         engine_kwargs["connect_args"] = {"ssl": True}
-        # Clean the URL from query parameters that asyncpg doesn't like
         clean_url = settings.DATABASE_URL.split("?")[0]
         db_url = clean_url
     else:
