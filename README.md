@@ -35,18 +35,10 @@ A robust, asynchronous FastAPI backend for a Bowling Alley management system. Bu
    cd backend
    ```
 
-2. **Create and activate a virtual environment**:
+2. **Install dependencies using uv**:
+   Make sure you have [uv](https://github.com/astral-sh/uv) installed, then sync the environment:
    ```bash
-   python -m venv .venv
-   # Windows
-   .\.venv\Scripts\activate
-   # Linux/Mac
-   source .venv/bin/activate
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
 
 4. **Configure environment variables**:
@@ -59,13 +51,13 @@ A robust, asynchronous FastAPI backend for a Bowling Alley management system. Bu
 5. **Run Database Migrations**:
    Ensure your database is reachable, then run:
    ```bash
-   alembic upgrade head
+   uv run alembic upgrade head
    ```
 
 6. **Seed Initial Data**:
    Create a default user for each role (Owner, Manager, Cashier, Maintenance, User):
    ```bash
-   python seed.py
+   uv run python seed.py
    ```
 
 ## 🚀 Running the Application
@@ -73,7 +65,7 @@ A robust, asynchronous FastAPI backend for a Bowling Alley management system. Bu
 Start the development server with hot-reload:
 
 ```bash
-uvicorn app.main:app --reload
+uv run uvicorn main:app --reload
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
@@ -104,7 +96,7 @@ tests/               # Pytest suite
 
 Run the test suite to ensure everything is working correctly:
 ```bash
-pytest
+uv run pytest
 ```
 
 ## 🛡️ License
