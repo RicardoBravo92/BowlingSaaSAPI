@@ -24,4 +24,5 @@ dependencies = [
     "sqlmodel>=0.0.37",
     "uvicorn[standard]>=0.41.0",
     "slowapi>=0.1.9",
+    "redis>=5.0.1",
 ]

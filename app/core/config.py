@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     MAIL_SERVER: str = "smtp.gmail.com"
     MAIL_STARTTLS: bool = True
     MAIL_SSL_TLS: bool = False
+    REDIS_URL: Optional[str] = None
     USE_CREDENTIALS: bool = True
 
     class Config:
