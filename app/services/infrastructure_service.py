@@ -1,7 +1,10 @@
 from datetime import date
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.infrastructure_repository import infrastructure_repo
 from app.repositories.booking_repository import booking_repo
+from app.models.infrastructure import Lane
+from app.schemas.infrastructure import LaneCreate, PriceSlotUpdate
 
 class InfrastructureService:
     async def get_grid_availability(self, db: AsyncSession, booking_date: date):
@@ -38,5 +41,21 @@ class InfrastructureService:
             }
             grid.append(lane_data)
         return grid
+
+    async def create_lane(self, db: AsyncSession, lane_in: LaneCreate):
+        new_lane = Lane(number=lane_in.number, type=lane_in.type)
+        return await infrastructure_repo.create_lane(db, new_lane)
+
+    async def delete_lane(self, db: AsyncSession, lane_id: int):
+        lane = await infrastructure_repo.get_lane(db, lane_id)
+        if not lane:
+            raise HTTPException(status_code=404, detail="Lane not found")
+        return await infrastructure_repo.delete_lane(db, lane)
+
+    async def update_slot_price(self, db: AsyncSession, slot_id: int, slot_in: PriceSlotUpdate):
+        slot = await infrastructure_repo.get_slot(db, slot_id)
+        if not slot:
+            raise HTTPException(status_code=404, detail="Price slot not found")
+        return await infrastructure_repo.update_slot_price(db, slot, slot_in.price)
 
 infrastructure_service = InfrastructureService()

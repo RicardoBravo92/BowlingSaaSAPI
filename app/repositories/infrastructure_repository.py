@@ -45,4 +45,29 @@ class InfrastructureRepository:
         )
         return result.scalars().all()
 
+    async def get_lane(self, db: AsyncSession, lane_id: int):
+        result = await db.execute(select(Lane).where(Lane.id == lane_id))
+        return result.scalar_one_or_none()
+
+    async def create_lane(self, db: AsyncSession, lane: Lane):
+        db.add(lane)
+        await db.commit()
+        await db.refresh(lane)
+        return lane
+
+    async def delete_lane(self, db: AsyncSession, lane: Lane):
+        await db.delete(lane)
+        await db.commit()
+        return True
+
+    async def get_slot(self, db: AsyncSession, slot_id: int):
+        result = await db.execute(select(PriceSlot).where(PriceSlot.id == slot_id))
+        return result.scalar_one_or_none()
+
+    async def update_slot_price(self, db: AsyncSession, slot: PriceSlot, new_price: float):
+        slot.price = new_price
+        await db.commit()
+        await db.refresh(slot)
+        return slot
+
 infrastructure_repo = InfrastructureRepository()

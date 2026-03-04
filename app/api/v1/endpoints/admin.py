@@ -78,6 +78,8 @@ async def cleanup_bookings(
     count = await booking_service.cleanup_expired_bookings(db)
     return {"message": f"Cleanup completed. {count} bookings cancelled."}
 
+from app.services.analytics_service import analytics_service
+
 # --- REPORTS ---
 
 @router.get("/stats")
@@ -85,9 +87,12 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
     owner = Depends(get_current_active_owner)
 ):
-    """Sales and occupancy reports (Owner only)"""
-    # TODO: Implement analytics service
+    """Business intelligence metrics for owners"""
+    summary = await analytics_service.get_summary_stats(db)
+    history = await analytics_service.get_occupancy_report(db, days=30)
+    
     return {
-        "summary": "Report system status: Initialized",
-        "notice": "Analytical data will be available once the booking history grows."
+        "summary": summary,
+        "daily_history": history,
+        "period": "Last 30 days"
     }

@@ -1,19 +1,23 @@
-from fastapi import APIRouter, Depends, status, BackgroundTasks
+from fastapi import APIRouter, Depends, status, BackgroundTasks, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.api.dependencies import get_current_user
 from app.services.user_service import user_service
 from app.schemas.user import UserCreate, UserRead, Token, ForgotPasswordRequest, PasswordResetConfirm
+from app.core.limiter import limiter
 
 router = APIRouter()
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def register(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     return await user_service.register_user(db, user_in)
 
 @router.post("/login", response_model=Token)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     db: AsyncSession = Depends(get_db), 
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
@@ -21,7 +25,9 @@ async def login(
     return await user_service.authenticate(db, form_data.username, form_data.password)
 
 @router.post("/forgot-password")
+@limiter.limit("3/minute")
 async def forgot_password(
+    request: Request,
     data: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
     background_tasks: BackgroundTasks = BackgroundTasks()
