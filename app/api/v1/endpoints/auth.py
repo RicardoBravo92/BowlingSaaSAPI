@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
+from app.api.dependencies import get_current_user
 from app.services.user_service import user_service
 from app.schemas.user import UserCreate, UserRead, Token, ForgotPasswordRequest, PasswordResetConfirm
 
@@ -29,6 +30,14 @@ async def forgot_password(
     """
     await user_service.request_password_reset(db, data.email)
     return {"message": "If the account exists, a password reset email has been sent."}
+
+@router.get("/me", response_model=UserRead)
+async def get_me(
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Returns the profile of the currently authenticated user."""
+    return current_user
 
 @router.post("/reset-password")
 async def reset_password(

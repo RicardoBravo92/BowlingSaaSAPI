@@ -49,4 +49,16 @@ class BookingRepository(BaseRepository[Booking]):
         # Convert to a set of tuples for fast O(1) lookup in the Service
         return {(row.lane_id, row.price_slot_id) for row in result.all()}
 
+    async def get_expired_pending_bookings(self, db: AsyncSession):
+        """Fetches all PENDING bookings where expires_at < now."""
+        now = datetime.utcnow()
+        stmt = select(Booking).where(
+            and_(
+                Booking.status == BookingStatus.PENDING,
+                Booking.expires_at < now
+            )
+        )
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
 booking_repo = BookingRepository(Booking)

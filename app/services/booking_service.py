@@ -109,4 +109,20 @@ class BookingService:
 
         return booking
 
+    async def cleanup_expired_bookings(self, db: AsyncSession):
+        """Cancels all bookings that have exceeded their 10-minute payment window."""
+        expired_bookings = await booking_repo.get_expired_pending_bookings(db)
+        
+        if not expired_bookings:
+            return 0
+            
+        count = 0
+        for booking in expired_bookings:
+            booking.status = BookingStatus.CANCELLED
+            count += 1
+            logger.info(f"Booking ID {booking.id} has been automatically cancelled due to expiration.")
+            
+        await db.commit()
+        return count
+
 booking_service = BookingService()

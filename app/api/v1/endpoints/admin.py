@@ -66,6 +66,17 @@ async def update_user_role(
     
     return await user_repository.update(db, db_obj=db_user, obj_in=user_in)
 
+# --- MAINTENANCE ---
+
+@router.post("/maintenance/cleanup-bookings")
+async def cleanup_bookings(
+    db: AsyncSession = Depends(get_db),
+    owner = Depends(get_current_active_owner)
+):
+    """Manually trigger the cancellation of expired pending bookings"""
+    count = await booking_service.cleanup_expired_bookings(db)
+    return {"message": f"Cleanup completed. {count} bookings cancelled."}
+
 # --- REPORTS ---
 
 @router.get("/stats")
