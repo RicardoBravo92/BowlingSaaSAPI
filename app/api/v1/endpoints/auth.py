@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -23,12 +23,13 @@ async def login(
 @router.post("/forgot-password")
 async def forgot_password(
     data: ForgotPasswordRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
     Step 1: User provides email, we send an email with a reset link (token).
     """
-    await user_service.request_password_reset(db, data.email)
+    await user_service.request_password_reset(db, data.email, background_tasks=background_tasks)
     return {"message": "If the account exists, a password reset email has been sent."}
 
 @router.get("/me", response_model=UserRead)

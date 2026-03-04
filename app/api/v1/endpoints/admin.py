@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 
@@ -19,10 +19,11 @@ router = APIRouter()
 async def confirm_booking(
     booking_id: int,
     db: AsyncSession = Depends(get_db),
-    cashier = Depends(get_current_active_cashier)
+    cashier = Depends(get_current_active_cashier),
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """Confirm that the user has paid (in-person or manual)"""
-    return await booking_service.confirm_payment(db, booking_id)
+    return await booking_service.confirm_payment(db, booking_id, background_tasks=background_tasks)
 
 # --- USER MANAGEMENT (OWNER ONLY) ---
 

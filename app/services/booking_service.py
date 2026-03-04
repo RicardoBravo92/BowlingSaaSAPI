@@ -73,7 +73,7 @@ class BookingService:
         logger.info(f"Reservation created successfully for user {user_id}: Booking ID {new_booking.id}")
         return new_booking
 
-    async def confirm_payment(self, db: AsyncSession, booking_id: int):
+    async def confirm_payment(self, db: AsyncSession, booking_id: int, background_tasks=None):
         """This method is called when the payment gateway gives the OK"""
         logger.info(f"Attempting to confirm payment for Booking ID: {booking_id}")
         
@@ -101,8 +101,15 @@ class BookingService:
                 "booking_id": booking.id,
                 "total_price": booking.total_price
             }
-            # Run email sending in the background (fastapi-mail is async)
-            await email_service.send_booking_confirmation(booking.user.email, email_data)
+            if background_tasks:
+                background_tasks.add_task(
+                    email_service.send_booking_confirmation, 
+                    booking.user.email, 
+                    email_data
+                )
+            else:
+                # Fallback if no background tasks provided (e.g. tests or manual calls)
+                await email_service.send_booking_confirmation(booking.user.email, email_data)
         except Exception as e:
             logger.error(f"Error sending confirmation email for booking {booking_id}: {str(e)}")
             # We don't rollback payment confirmation if email fails

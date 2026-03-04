@@ -64,7 +64,7 @@ class UserService:
             raise HTTPException(status_code=404, detail="User not found")
         return user
 
-    async def request_password_reset(self, db: AsyncSession, email: str):
+    async def request_password_reset(self, db: AsyncSession, email: str, background_tasks=None):
         """Generates a reset token and sends an email."""
         logger.info(f"Password reset requested for: {email}")
         user = await user_repository.get_by_email(db, email=email)
@@ -83,10 +83,17 @@ class UserService:
         # In a real app, this link would point to your frontend
         reset_link = f"http://localhost:3000/reset-password?token={reset_token}"
         
-        await email_service.send_password_reset(
-            user.email, 
-            {"full_name": user.full_name, "reset_link": reset_link}
-        )
+        email_data = {"full_name": user.full_name, "reset_link": reset_link}
+        
+        if background_tasks:
+            background_tasks.add_task(
+                email_service.send_password_reset,
+                user.email,
+                email_data
+            )
+        else:
+            await email_service.send_password_reset(user.email, email_data)
+            
         logger.info(f"Password reset email sent to: {email}")
 
     async def reset_password(self, db: AsyncSession, token: str, new_password: str):
