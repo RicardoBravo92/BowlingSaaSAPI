@@ -1,5 +1,5 @@
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import time
 from app.models.enums import LaneType
 
@@ -8,9 +8,17 @@ class PriceSlotRead(BaseModel):
     start_time: time
     end_time: time
     price: float
+    premium_price: float
 
     class Config:
         from_attributes = True
+
+class PriceSlotCreate(BaseModel):
+    start_time: time
+    end_time: time
+    price: float = Field(ge=0.0)
+    premium_price: float = Field(default=0.0, ge=0.0)
+    schedule_id: int
 
 class LaneRead(BaseModel):
     id: int
@@ -29,7 +37,10 @@ class LaneUpdate(BaseModel):
     type: Optional[LaneType] = None
 
 class PriceSlotUpdate(BaseModel):
-    price: float
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    price: Optional[float] = Field(default=None, ge=0.0)
+    premium_price: Optional[float] = Field(default=None, ge=0.0)
 
 class ScheduleRead(BaseModel):
     id: int
@@ -40,6 +51,16 @@ class ScheduleRead(BaseModel):
 
 class ScheduleCreate(BaseModel):
     name: str
+
+class DayConfigRead(BaseModel):
+    day_of_week: int
+    schedule_id: int
+
+    class Config:
+        from_attributes = True
+
+class DayConfigUpdate(BaseModel):
+    schedule_id: int
 
 class SlotInfo(BaseModel):
     slot_id: int

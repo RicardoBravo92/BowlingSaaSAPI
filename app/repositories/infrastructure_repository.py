@@ -21,6 +21,25 @@ class InfrastructureRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_all_schedules(self, db: AsyncSession):
+        result = await db.execute(select(Schedule).order_by(Schedule.id))
+        return result.scalars().all()
+
+    async def create_schedule(self, db: AsyncSession, schedule: Schedule):
+        db.add(schedule)
+        await db.commit()
+        await db.refresh(schedule)
+        return schedule
+
+    async def get_schedule(self, db: AsyncSession, schedule_id: int):
+        result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
+        return result.scalar_one_or_none()
+
+    async def delete_schedule(self, db: AsyncSession, schedule: Schedule):
+        await db.delete(schedule)
+        await db.commit()
+        return True
+
     async def get_slots_by_schedule(self, db: AsyncSession, schedule_id: int):
         result = await db.execute(
             select(PriceSlot)
@@ -60,14 +79,45 @@ class InfrastructureRepository:
         await db.commit()
         return True
 
+    async def update_lane(self, db: AsyncSession, lane: Lane, lane_in: dict):
+        for key, value in lane_in.items():
+            if value is not None:
+                setattr(lane, key, value)
+        await db.commit()
+        await db.refresh(lane)
+        return lane
+
     async def get_slot(self, db: AsyncSession, slot_id: int):
         result = await db.execute(select(PriceSlot).where(PriceSlot.id == slot_id))
         return result.scalar_one_or_none()
 
-    async def update_slot_price(self, db: AsyncSession, slot: PriceSlot, new_price: float):
-        slot.price = new_price
+    async def update_slot(self, db: AsyncSession, slot: PriceSlot, slot_in: dict):
+        for key, value in slot_in.items():
+            if value is not None:
+                setattr(slot, key, value)
         await db.commit()
         await db.refresh(slot)
         return slot
+
+    async def create_slot(self, db: AsyncSession, slot: PriceSlot):
+        db.add(slot)
+        await db.commit()
+        await db.refresh(slot)
+        return slot
+
+    async def delete_slot(self, db: AsyncSession, slot: PriceSlot):
+        await db.delete(slot)
+        await db.commit()
+        return True
+
+    async def get_all_day_configs(self, db: AsyncSession):
+        result = await db.execute(select(DayConfig).order_by(DayConfig.day_of_week))
+        return result.scalars().all()
+
+    async def update_day_config(self, db: AsyncSession, day_config: DayConfig):
+        db.add(day_config)
+        await db.commit()
+        await db.refresh(day_config)
+        return day_config
 
 infrastructure_repo = InfrastructureRepository()

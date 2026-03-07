@@ -1,12 +1,15 @@
 # app/main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from contextlib import asynccontextmanager
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.router import api_router
 from app.core.logging_config import setup_logging
 from app.core.tasks import repeat_cleanup_task
 from app.core.limiter import limiter
+from app.core.database import get_db
 from app.core.exceptions import (
     global_exception_handler, 
     validation_exception_handler, 

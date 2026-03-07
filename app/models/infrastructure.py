@@ -28,6 +28,7 @@ class PriceSlot(SQLModel, table=True):
     start_time: time
     end_time: time
     price: float
+    premium_price: float = Field(default=0.0)
     schedule_id: int = Field(foreign_key="schedule.id")
     schedule: Schedule = Relationship(back_populates="price_slots")
     items: List["BookingItem"] = Relationship(back_populates="price_slot")
