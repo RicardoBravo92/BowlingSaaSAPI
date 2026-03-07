@@ -13,40 +13,81 @@ logger = get_logger(__name__)
 
 class BookingService:
     async def create_reservation(self, db: AsyncSession, user_id: int, data: BookingCreate):
-        logger.info(f"User {user_id} attempting to create reservation for date {data.booking_date}, lane {data.lane_id}")
+        logger.info(f"User {user_id} attempting to create multi-lane reservation for date {data.booking_date}")
         
-        # 1. Validate existence and contiguity of selected slots
-        slots = await infrastructure_repo.get_slots_by_ids(db, data.selected_slots)
+        parsed_slots = []
+        unique_lane_ids = set()
         
-        if len(slots) != len(data.selected_slots):
-            logger.warning(f"Booking failed for user {user_id}: Invalid slot IDs provided {data.selected_slots}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="One or more selected slots are invalid."
-            )
+        for key in data.slot_keys:
+            try:
+                lane_id_str, slot_id_str, start_hour_str = key.split(":")
+                lane_id = int(lane_id_str)
+                slot_id = int(slot_id_str)
+                start_hour = int(start_hour_str)
+                
+                parsed_slots.append({
+                    "lane_id": lane_id,
+                    "slot_id": slot_id,
+                    "start_hour": start_hour
+                })
+                unique_lane_ids.add(lane_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid slot key format. Expected lane:slot:hour")
 
-        # Check contiguity (slots are ordered by start_time by the repository)
-        for i in range(len(slots) - 1):
-            if slots[i].end_time != slots[i+1].start_time:
-                logger.warning(f"Booking failed for user {user_id}: Slots are not contiguous {data.selected_slots}")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Selected slots must be contiguous."
-                )
+        if not parsed_slots:
+            raise HTTPException(status_code=400, detail="No slots selected.")
 
-        # 2. Validate availability again (to avoid race conditions)
+        # Fetch required lanes
+        lanes = await infrastructure_repo.get_lanes_by_ids(db, list(unique_lane_ids))
+        lanes_by_id = {L.id: L for L in lanes}
+        
+        if len(lanes_by_id) != len(unique_lane_ids):
+            raise HTTPException(status_code=400, detail="One or more invalid lanes selected.")
+
+        # Fetch occupied
         occupied = await booking_repo.get_occupied_slots(db, data.booking_date)
         
-        for slot_id in data.selected_slots:
-            if (data.lane_id, slot_id) in occupied:
-                logger.warning(f"Booking failed for user {user_id}: Slot {slot_id} on lane {data.lane_id} is already occupied.")
+        # We need all unique slot_ids from the parsed pairs to fetch their pricing
+        unique_slot_ids = list({s["slot_id"] for s in parsed_slots})
+        slots = await infrastructure_repo.get_slots_by_ids(db, unique_slot_ids)
+        slots_by_id = {s.id: s for s in slots}
+
+        total_price = 0
+        items_to_create = []
+
+        for p_slot in parsed_slots:
+            lane_id = p_slot["lane_id"]
+            slot_id = p_slot["slot_id"]
+            start_hour = p_slot["start_hour"]
+            
+            lane = lanes_by_id[lane_id]
+
+            if slot_id not in slots_by_id:
+                raise HTTPException(status_code=400, detail=f"Invalid slot {slot_id}.")
+            
+            slot = slots_by_id[slot_id]
+            
+            # Verify hour is within bounds
+            if start_hour < slot.start_time.hour or start_hour >= slot.end_time.hour:
+                raise HTTPException(status_code=400, detail=f"Invalid hour for slot {slot_id}.")
+
+            # Validate availability
+            if (lane_id, slot_id, start_hour) in occupied:
+                logger.warning(f"Booking failed for user {user_id}: Slot {slot_id}:{start_hour} on lane {lane_id} is already occupied.")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The selected time slot is no longer available."
+                    detail="One or more selected time slots are no longer available."
                 )
 
-        # 3. Calculate total price (using the objects we already fetched)
-        total_price = sum(slot.price for slot in slots)
+            # Get the correct price for the lane type
+            price = slot.premium_price if lane.type.value == "PREMIUM" else slot.price
+            total_price += price
+            
+            items_to_create.append({
+                "lane_id": lane_id,
+                "price_slot_id": slot_id, 
+                "start_hour": start_hour
+            })
 
         # 4. Create booking header with expiration
         new_booking = Booking(
@@ -59,12 +100,13 @@ class BookingService:
         db.add(new_booking)
         await db.flush() # To obtain the booking ID
 
-        # 5. Create items (each hour block)
-        for slot_id in data.selected_slots:
+        # 5. Create items
+        for item_data in items_to_create:
             item = BookingItem(
                 booking_id=new_booking.id,
-                lane_id=data.lane_id,
-                price_slot_id=slot_id
+                lane_id=item_data["lane_id"],
+                price_slot_id=item_data["price_slot_id"],
+                start_hour=item_data["start_hour"]
             )
             db.add(item)
 

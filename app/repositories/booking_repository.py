@@ -21,15 +21,15 @@ class BookingRepository(BaseRepository[Booking]):
         return result.scalar_one_or_none()
     async def get_occupied_slots(self, db: AsyncSession, booking_date: date):
         """
-        Returns a set of (lane_id, slot_id) that are NOT available.
+        Returns a set of (lane_id, slot_id, start_hour) that are NOT available.
         Considers:
         1. PAID reservations.
         2. PENDING reservations that have not yet expired.
         """
         now = datetime.utcnow()
-        
+
         stmt = (
-            select(BookingItem.lane_id, BookingItem.price_slot_id)
+            select(BookingItem.lane_id, BookingItem.price_slot_id, BookingItem.start_hour)
             .join(Booking)
             .where(
                 and_(
@@ -44,10 +44,10 @@ class BookingRepository(BaseRepository[Booking]):
                 )
             )
         )
-        
+
         result = await db.execute(stmt)
-        # Convert to a set of tuples for fast O(1) lookup in the Service
-        return {(row.lane_id, row.price_slot_id) for row in result.all()}
+        # Convert to a set of 3-tuples for fast O(1) lookup in the Service
+        return {(row.lane_id, row.price_slot_id, row.start_hour) for row in result.all()}
 
     async def get_expired_pending_bookings(self, db: AsyncSession):
         """Fetches all PENDING bookings where expires_at < now."""

@@ -8,38 +8,47 @@ from app.schemas.infrastructure import LaneCreate, LaneUpdate, PriceSlotUpdate, 
 
 class InfrastructureService:
     async def get_grid_availability(self, db: AsyncSession, booking_date: date):
+        from datetime import datetime as dt
         # 1. Get the price schedule for the day of the week
         weekday = booking_date.weekday()
         schedule = await infrastructure_repo.get_schedule_by_day(db, weekday)
-        
+
         if not schedule:
             return []
 
         # 2. Get lanes and slots for that schedule
         lanes = await infrastructure_repo.get_all_lanes(db)
         slots = await infrastructure_repo.get_slots_by_schedule(db, schedule.id)
-        
-        # 3. Get already occupied cells (Paid or non-expired Pending)
-        occupied = await booking_repo.get_occupied_slots(db, booking_date)
-        # 'occupied' will be a set of tuples {(lane_id, slot_id), ...}
 
-        # 4. Format for the frontend
+        # 3. Get already occupied cells per (lane_id, slot_id, start_hour)
+        occupied = await booking_repo.get_occupied_slots(db, booking_date)
+        # occupied is a set of tuples {(lane_id, slot_id, start_hour), ...}
+
+        # 4. Expand each PriceSlot into individual 1-hour blocks
         grid = []
         for lane in lanes:
-            lane_data = {
+            hourly_slots = []
+            base_price = lane.type.value == "PREMIUM"
+            for s in slots:
+                # Iterate hour by hour within the slot range
+                start_h = s.start_time.hour
+                end_h = s.end_time.hour
+                for h in range(start_h, end_h):
+                    price = s.premium_price if base_price else s.price
+                    is_available = (lane.id, s.id, h) not in occupied
+                    hourly_slots.append({
+                        "slot_id": s.id,
+                        "slot_key": f"{lane.id}:{s.id}:{h}",   # unique key per hour, includes lane_id
+                        "time": f"{h:02d}:00",
+                        "price": price,
+                        "available": is_available,
+                    })
+            grid.append({
                 "lane_id": lane.id,
                 "lane_number": lane.number,
                 "type": lane.type,
-                "slots": [
-                    {
-                        "slot_id": s.id,
-                        "time": f"{s.start_time.strftime('%H:%M')}-{s.end_time.strftime('%H:%M')}",
-                        "price": s.premium_price if lane.type.value == "PREMIUM" else s.price,
-                        "available": (lane.id, s.id) not in occupied
-                    } for s in slots
-                ]
-            }
-            grid.append(lane_data)
+                "slots": hourly_slots,
+            })
         return grid
 
     async def create_lane(self, db: AsyncSession, lane_in: LaneCreate):

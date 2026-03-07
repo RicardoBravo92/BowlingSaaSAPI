@@ -12,10 +12,7 @@ services:
       - db
       - redis
     restart: always
-    volumes:
-      - .:/app
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
   db:
     image: postgres:15-alpine
     container_name: bowling_saas_db

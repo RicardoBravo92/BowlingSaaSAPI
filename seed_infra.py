@@ -9,10 +9,17 @@ async def seed_infra():
     async with AsyncSessionLocal() as db:
         print("Creating Lanes...")
         # Create Lanes
-        lane1 = Lane(number="1", type=LaneType.NORMAL)
-        lane2 = Lane(number="2", type=LaneType.VIP)
-        lane3 = Lane(number="3", type=LaneType.KIDS)
-        db.add_all([lane1, lane2, lane3])
+        lane1 = Lane(number="1", type=LaneType.PREMIUM)
+        lane2 = Lane(number="2", type=LaneType.PREMIUM)
+        lane3 = Lane(number="3", type=LaneType.PREMIUM)
+        lane4 = Lane(number="4", type=LaneType.NORMAL)
+        lane5 = Lane(number="5", type=LaneType.NORMAL)
+        lane6 = Lane(number="6", type=LaneType.NORMAL)
+        lane7 = Lane(number="7", type=LaneType.NORMAL)
+        lane8 = Lane(number="8", type=LaneType.NORMAL)
+        lane9 = Lane(number="9", type=LaneType.NORMAL)
+        lane10 = Lane(number="10", type=LaneType.NORMAL)
+        db.add_all([lane1, lane2, lane3, lane4, lane5, lane6, lane7, lane8, lane9, lane10])
         await db.commit()
 
         print("Creating Schedules...")
@@ -26,11 +33,11 @@ async def seed_infra():
 
         print("Creating Price Slots...")
         # Create Slots
-        slot1 = PriceSlot(schedule_id=sched1.id, start_time=time(10,0), end_time=time(18,0), price=15.0)
-        slot2 = PriceSlot(schedule_id=sched1.id, start_time=time(18,0), end_time=time(22,0), price=25.0)
+        slot1 = PriceSlot(schedule_id=sched1.id, start_time=time(10,0), end_time=time(18,0), price=15.0, premium_price=20.0)
+        slot2 = PriceSlot(schedule_id=sched1.id, start_time=time(18,0), end_time=time(22,0), price=25.0, premium_price=30.0)
         
-        slot3 = PriceSlot(schedule_id=sched2.id, start_time=time(10,0), end_time=time(14,0), price=20.0)
-        slot4 = PriceSlot(schedule_id=sched2.id, start_time=time(14,0), end_time=time(23,0), price=35.0)
+        slot3 = PriceSlot(schedule_id=sched2.id, start_time=time(10,0), end_time=time(14,0), price=20.0, premium_price=25.0)
+        slot4 = PriceSlot(schedule_id=sched2.id, start_time=time(14,0), end_time=time(23,0), price=35.0, premium_price=40.0)
         db.add_all([slot1, slot2, slot3, slot4])
         await db.commit()
 

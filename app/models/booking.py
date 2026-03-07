@@ -12,7 +12,8 @@ class BookingItem(SQLModel, table=True):
     booking_id: int = Field(foreign_key="booking.id")
     lane_id: int = Field(foreign_key="lane.id")
     price_slot_id: int = Field(foreign_key="priceslot.id")
-    
+    start_hour: int = Field(default=0)  # The specific hour booked within the price slot (e.g. 14 for 14:00)
+
     booking: "Booking" = Relationship(back_populates="items")
     lane: "Lane" = Relationship(back_populates="items")
     price_slot: "PriceSlot" = Relationship(back_populates="items")
@@ -27,4 +28,7 @@ class Booking(SQLModel, table=True):
     expires_at: datetime # For the 10-minute slot lock
     
     user: "User" = Relationship(back_populates="bookings")
-    items: List[BookingItem] = Relationship(back_populates="booking")
+    items: List[BookingItem] = Relationship(
+        back_populates="booking",
+        sa_relationship_kwargs={"lazy": "selectin"}
+    )

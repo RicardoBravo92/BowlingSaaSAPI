@@ -12,6 +12,11 @@ class InfrastructureRepository:
         result = await db.execute(select(Lane).order_by(Lane.number))
         return result.scalars().all()
 
+    async def get_lanes_by_ids(self, db: AsyncSession, lane_ids: list[int]):
+        """Returns Lane objects for the given IDs"""
+        result = await db.execute(select(Lane).where(Lane.id.in_(lane_ids)))
+        return result.scalars().all()
+
     async def get_schedule_by_day(self, db: AsyncSession, day_of_week: int):
         """Finds which schedule applies today (0=Monday, 6=Sunday)"""
         result = await db.execute(
