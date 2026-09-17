@@ -1,7 +1,9 @@
-from typing import Optional, List
-from pydantic import BaseModel, Field
 from datetime import time
+
+from pydantic import BaseModel, ConfigDict, Field
+
 from app.models.enums import LaneType
+
 
 class PriceSlotRead(BaseModel):
     id: int
@@ -10,8 +12,7 @@ class PriceSlotRead(BaseModel):
     price: float
     premium_price: float
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PriceSlotCreate(BaseModel):
     start_time: time
@@ -25,29 +26,27 @@ class LaneRead(BaseModel):
     number: str
     type: LaneType
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class LaneCreate(BaseModel):
     number: str
     type: LaneType = LaneType.NORMAL
 
 class LaneUpdate(BaseModel):
-    number: Optional[str] = None
-    type: Optional[LaneType] = None
+    number: str | None = None
+    type: LaneType | None = None
 
 class PriceSlotUpdate(BaseModel):
-    start_time: Optional[time] = None
-    end_time: Optional[time] = None
-    price: Optional[float] = Field(default=None, ge=0.0)
-    premium_price: Optional[float] = Field(default=None, ge=0.0)
+    start_time: time | None = None
+    end_time: time | None = None
+    price: float | None = Field(default=None, ge=0.0)
+    premium_price: float | None = Field(default=None, ge=0.0)
 
 class ScheduleRead(BaseModel):
     id: int
     name: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ScheduleCreate(BaseModel):
     name: str
@@ -56,14 +55,14 @@ class DayConfigRead(BaseModel):
     day_of_week: int
     schedule_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DayConfigUpdate(BaseModel):
     schedule_id: int
 
 class SlotInfo(BaseModel):
     slot_id: int
+    slot_key: str
     time: str
     price: float
     available: bool
@@ -73,4 +72,4 @@ class AvailabilityGrid(BaseModel):
     lane_id: int
     lane_number: str
     type: LaneType
-    slots: List[SlotInfo]
+    slots: list[SlotInfo]

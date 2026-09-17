@@ -7,20 +7,19 @@ import traceback
 
 logger = get_logger(__name__)
 
+
 async def global_exception_handler(request: Request, exc: Exception):
     """
     Catch-all for any unhandled exceptions.
     """
     tb = traceback.format_exc()
     logger.error(f"Unhandled exception: {str(exc)}\n{tb}")
-    
+
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "detail": "An unexpected error occurred on the server.",
-            "error_type": exc.__class__.__name__
-        }
+        content={"detail": "An unexpected error occurred on the server."},
     )
+
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """
@@ -31,9 +30,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "detail": "Validation error in the request data.",
-            "errors": exc.errors()
-        }
+            "errors": exc.errors(),
+        },
     )
+
 
 async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
     """
@@ -44,6 +44,6 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={
             "detail": "Database service is temporarily unavailable.",
-            "error_type": "DatabaseError"
-        }
+            "error_type": "DatabaseError",
+        },
     )

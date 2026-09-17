@@ -1,12 +1,11 @@
-import asyncio
 import pytest
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import SQLModel
 
-from app.main import app
 from app.core.database import get_db
+from app.main import create_app
 
 # Use an in-memory SQLite database for testing
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -32,6 +31,8 @@ async def db_session():
 
 @pytest.fixture
 async def client(db_session):
+    app = create_app()
+
     async def override_get_db():
         yield db_session
 

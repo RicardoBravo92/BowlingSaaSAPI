@@ -1,9 +1,13 @@
+from datetime import time, timedelta
+
 import pytest
-from datetime import date, time, datetime, timedelta
-from app.models.infrastructure import Lane, Schedule, DayConfig, PriceSlot
-from app.models.enums import UserRole, LaneType
-from app.services.booking_service import booking_service
+
+from app.core.utils import utcnow
+from app.models.enums import LaneType, UserRole
+from app.models.infrastructure import DayConfig, Lane, PriceSlot, Schedule
 from app.schemas.booking import BookingCreate
+from app.services.booking_service import booking_service
+
 
 @pytest.mark.asyncio
 async def test_race_condition_concurrent_booking(db_session, client):
@@ -16,7 +20,7 @@ async def test_race_condition_concurrent_booking(db_session, client):
     await db_session.flush()
     
     # Create a slot for today
-    today = date.today()
+    today = utcnow().date()
     day_config = DayConfig(day_of_week=today.weekday(), schedule_id=schedule.id)
     db_session.add(day_config)
     
@@ -44,9 +48,8 @@ async def test_race_condition_concurrent_booking(db_session, client):
     # Here we test if the service properly detects occupation.
     
     booking_data = BookingCreate(
-        lane_id=lane.id,
         booking_date=today,
-        selected_slots=[slot.id]
+        slot_keys=[f"{lane.id}:{slot.id}:10"]
     )
 
     # First booking succeeds
@@ -83,10 +86,10 @@ async def test_booking_expiration_and_slot_release(db_session):
     from app.models.booking import Booking, BookingItem
     from app.models.enums import BookingStatus
     
-    expired_at = datetime.utcnow() - timedelta(minutes=1)
+    expired_at = utcnow() - timedelta(minutes=1)
     booking = Booking(
         user_id=user.id,
-        booking_date=date.today(),
+        booking_date=utcnow().date(),
         total_price=25.0,
         status=BookingStatus.PENDING,
         expires_at=expired_at
@@ -100,8 +103,8 @@ async def test_booking_expiration_and_slot_release(db_session):
 
     # Step 1: Verify slot is considered AVAILABLE because booking is expired
     from app.repositories.booking_repository import booking_repo
-    occupied = await booking_repo.get_occupied_slots(db_session, date.today())
-    assert (lane.id, slot.id) not in occupied
+    occupied = await booking_repo.get_occupied_slots(db_session, utcnow().date())
+    assert (lane.id, slot.id, 0) not in occupied
 
     # Step 2: Run cleanup task
     cancelled_count = await booking_service.cleanup_expired_bookings(db_session)

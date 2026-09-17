@@ -1,8 +1,12 @@
+from datetime import timedelta
+
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+
+from app.core.utils import utcnow
 from app.models.booking import Booking
 from app.models.enums import BookingStatus
-from datetime import datetime, timedelta
+
 
 class AnalyticsService:
     async def get_summary_stats(self, db: AsyncSession):
@@ -18,7 +22,7 @@ class AnalyticsService:
         total_bookings = result_count.scalar() or 0
 
         # Recent sales (last 7 days)
-        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        seven_days_ago = utcnow() - timedelta(days=7)
         stmt_recent = select(func.sum(Booking.total_price)).where(
             and_(
                 Booking.status == BookingStatus.PAID,
@@ -40,7 +44,7 @@ class AnalyticsService:
         # This is a simplified version. 
         # Real occupancy would need total possible slots vs occupied slots.
         # For now, let's return bookings per day.
-        since_date = datetime.utcnow() - timedelta(days=days)
+        since_date = utcnow() - timedelta(days=days)
         
         stmt = (
             select(Booking.booking_date, func.count(Booking.id))

@@ -1,10 +1,14 @@
-from datetime import date, datetime
+from datetime import date
+
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from sqlalchemy.orm import selectinload
+
+from app.core.utils import utcnow
 from app.models.booking import Booking, BookingItem
 from app.models.enums import BookingStatus
-from sqlalchemy.orm import selectinload
 from app.repositories.base_repository import BaseRepository
+
 
 class BookingRepository(BaseRepository[Booking]):
     async def get_with_details(self, db: AsyncSession, booking_id: int) -> Booking:
@@ -26,7 +30,7 @@ class BookingRepository(BaseRepository[Booking]):
         1. PAID reservations.
         2. PENDING reservations that have not yet expired.
         """
-        now = datetime.utcnow()
+        now = utcnow()
 
         stmt = (
             select(BookingItem.lane_id, BookingItem.price_slot_id, BookingItem.start_hour)
@@ -51,7 +55,7 @@ class BookingRepository(BaseRepository[Booking]):
 
     async def get_expired_pending_bookings(self, db: AsyncSession):
         """Fetches all PENDING bookings where expires_at < now."""
-        now = datetime.utcnow()
+        now = utcnow()
         stmt = select(Booking).where(
             and_(
                 Booking.status == BookingStatus.PENDING,

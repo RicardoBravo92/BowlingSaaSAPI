@@ -1,6 +1,8 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr
+
 from app.models.enums import UserRole
+
 
 # Information sent by the user during registration
 class UserCreate(BaseModel):
@@ -15,8 +17,7 @@ class UserRead(BaseModel):
     full_name: str
     role: UserRole
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Authentication token schemas
 class Token(BaseModel):
@@ -24,13 +25,13 @@ class Token(BaseModel):
     token_type: str
 
 class TokenData(BaseModel):
-    email: Optional[str] = None
+    email: str | None = None
 
 # Fields that an administrator can update
 class UserUpdate(BaseModel):
-    full_name: Optional[str] = None
-    role: Optional[UserRole] = None
-    email: Optional[EmailStr] = None
+    full_name: str | None = None
+    role: UserRole | None = None
+    email: EmailStr | None = None
 
 # Password reset schemas
 class ForgotPasswordRequest(BaseModel):

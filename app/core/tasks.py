@@ -5,17 +5,29 @@ from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+
 async def repeat_cleanup_task():
     """Runs a periodic cleanup of expired bookings every 5 minutes."""
     logger.info("Starting background task for booking cleanup.")
+    consecutive_errors = 0
     while True:
         try:
             async with AsyncSessionLocal() as db:
                 count = await booking_service.cleanup_expired_bookings(db)
                 if count > 0:
-                    logger.info(f"Periodic Cleanup: {count} bookings cancelled automatically.")
+                    logger.info(
+                        f"Periodic Cleanup: {count} bookings cancelled automatically."
+                    )
+            consecutive_errors = 0
         except Exception as e:
-            logger.error(f"Error in background task 'repeat_cleanup_task': {str(e)}")
-            
-        # Wait for 5 minutes (300 seconds)
+            consecutive_errors += 1
+            logger.error(
+                f"Error in background task 'repeat_cleanup_task' ({consecutive_errors} consecutive): {str(e)}"
+            )
+            if consecutive_errors >= 5:
+                logger.critical(
+                    "Background task failing repeatedly, manual intervention required."
+                )
+                raise
+
         await asyncio.sleep(300)

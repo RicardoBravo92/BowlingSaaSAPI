@@ -1,12 +1,15 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
+
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.logging_config import get_logger
+from app.core.utils import utcnow
 from app.models.booking import Booking, BookingItem
 from app.models.enums import BookingStatus
-from app.schemas.booking import BookingCreate
 from app.repositories.booking_repository import booking_repo
 from app.repositories.infrastructure_repository import infrastructure_repo
-from app.core.logging_config import get_logger
+from app.schemas.booking import BookingCreate
 from app.services.email_service import email_service
 
 logger = get_logger(__name__)
@@ -95,7 +98,7 @@ class BookingService:
             booking_date=data.booking_date,
             total_price=total_price,
             status=BookingStatus.PENDING,
-            expires_at=datetime.utcnow() + timedelta(minutes=10)
+            expires_at=utcnow() + timedelta(minutes=10)
         )
         db.add(new_booking)
         await db.flush() # To obtain the booking ID
@@ -153,7 +156,7 @@ class BookingService:
                 # Fallback if no background tasks provided (e.g. tests or manual calls)
                 await email_service.send_booking_confirmation(booking.user.email, email_data)
         except Exception as e:
-            logger.error(f"Error sending confirmation email for booking {booking_id}: {str(e)}")
+            logger.error(f"Error sending confirmation email for booking {booking_id}: {e!s}")
             # We don't rollback payment confirmation if email fails
 
         return booking
