@@ -65,4 +65,71 @@ class BookingRepository(BaseRepository[Booking]):
         result = await db.execute(stmt)
         return result.scalars().all()
 
+    async def get_by_id_and_user(self, db: AsyncSession, booking_id: int, user_id: int) -> Booking | None:
+        """Fetches a single booking only if it belongs to the given user."""
+        stmt = (
+            select(Booking)
+            .where(and_(Booking.id == booking_id, Booking.user_id == user_id))
+            .options(selectinload(Booking.items).selectinload(BookingItem.lane))
+        )
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_all(
+        self,
+        db: AsyncSession,
+        *,
+        status: BookingStatus | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ):
+        """Fetches all bookings with user, items and lane info pre-loaded, newest first."""
+        filters = []
+        if status is not None:
+            filters.append(Booking.status == status)
+        if from_date is not None:
+            filters.append(Booking.booking_date >= from_date)
+        if to_date is not None:
+            filters.append(Booking.booking_date <= to_date)
+
+        stmt = (
+            select(Booking)
+            .options(
+                selectinload(Booking.user),
+                selectinload(Booking.items).selectinload(BookingItem.lane),
+            )
+            .order_by(Booking.booking_date.desc(), Booking.id.desc())
+        )
+        if filters:
+            stmt = stmt.where(and_(*filters))
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_user(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        *,
+        status: BookingStatus | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ):
+        """Fetches all bookings for a user, with items and lane info pre-loaded."""
+        filters = [Booking.user_id == user_id]
+        if status is not None:
+            filters.append(Booking.status == status)
+        if from_date is not None:
+            filters.append(Booking.booking_date >= from_date)
+        if to_date is not None:
+            filters.append(Booking.booking_date <= to_date)
+
+        stmt = (
+            select(Booking)
+            .where(and_(*filters))
+            .options(selectinload(Booking.items).selectinload(BookingItem.lane))
+            .order_by(Booking.booking_date.desc(), Booking.id.desc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
 booking_repo = BookingRepository(Booking)

@@ -1,6 +1,7 @@
 from datetime import date
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.utils import localnow
 from app.repositories.infrastructure_repository import infrastructure_repo
 from app.repositories.booking_repository import booking_repo
 from app.models.infrastructure import Lane, Schedule, PriceSlot, DayConfig
@@ -8,7 +9,6 @@ from app.schemas.infrastructure import LaneCreate, LaneUpdate, PriceSlotUpdate, 
 
 class InfrastructureService:
     async def get_grid_availability(self, db: AsyncSession, booking_date: date):
-        from datetime import datetime as dt
         # 1. Get the price schedule for the day of the week
         weekday = booking_date.weekday()
         schedule = await infrastructure_repo.get_schedule_by_day(db, weekday)
@@ -24,6 +24,11 @@ class InfrastructureService:
         occupied = await booking_repo.get_occupied_slots(db, booking_date)
         # occupied is a set of tuples {(lane_id, slot_id, start_hour), ...}
 
+        # Past hours (venue local time) are never available for booking
+        now = localnow()
+        is_past_date = booking_date < now.date()
+        is_today = booking_date == now.date()
+
         # 4. Expand each PriceSlot into individual 1-hour blocks
         grid = []
         for lane in lanes:
@@ -35,7 +40,8 @@ class InfrastructureService:
                 end_h = s.end_time.hour
                 for h in range(start_h, end_h):
                     price = s.premium_price if base_price else s.price
-                    is_available = (lane.id, s.id, h) not in occupied
+                    is_past = is_past_date or (is_today and h <= now.hour)
+                    is_available = not is_past and (lane.id, s.id, h) not in occupied
                     hourly_slots.append({
                         "slot_id": s.id,
                         "slot_key": f"{lane.id}:{s.id}:{h}",   # unique key per hour, includes lane_id

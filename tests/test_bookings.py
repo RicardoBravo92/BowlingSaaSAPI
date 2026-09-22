@@ -1,4 +1,4 @@
-from datetime import time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
@@ -7,6 +7,34 @@ from app.models.enums import LaneType, UserRole
 from app.models.infrastructure import DayConfig, Lane, PriceSlot, Schedule
 from app.schemas.booking import BookingCreate
 from app.services.booking_service import booking_service
+
+# Fixed wall-clock reference used to test past/future hour validation
+FIXED_NOW = datetime.combine(date(2026, 1, 15), time(15, 0))
+
+
+async def _create_pending_booking(db_session, user, lane, slot, start_hour=0, status=None):
+    from app.models.booking import Booking, BookingItem
+    from app.models.enums import BookingStatus
+
+    booking = Booking(
+        user_id=user.id,
+        booking_date=utcnow().date(),
+        total_price=20.0,
+        status=status or BookingStatus.PENDING,
+        expires_at=utcnow() + timedelta(minutes=10),
+    )
+    db_session.add(booking)
+    await db_session.flush()
+
+    item = BookingItem(
+        booking_id=booking.id,
+        lane_id=lane.id,
+        price_slot_id=slot.id,
+        start_hour=start_hour,
+    )
+    db_session.add(item)
+    await db_session.commit()
+    return booking
 
 
 @pytest.mark.asyncio
@@ -19,9 +47,9 @@ async def test_race_condition_concurrent_booking(db_session, client):
     db_session.add(schedule)
     await db_session.flush()
     
-    # Create a slot for today
-    today = utcnow().date()
-    day_config = DayConfig(day_of_week=today.weekday(), schedule_id=schedule.id)
+    # Book a slot on a future date so it is never considered "in the past"
+    target_date = utcnow().date() + timedelta(days=1)
+    day_config = DayConfig(day_of_week=target_date.weekday(), schedule_id=schedule.id)
     db_session.add(day_config)
     
     slot = PriceSlot(
@@ -48,7 +76,7 @@ async def test_race_condition_concurrent_booking(db_session, client):
     # Here we test if the service properly detects occupation.
     
     booking_data = BookingCreate(
-        booking_date=today,
+        booking_date=target_date,
         slot_keys=[f"{lane.id}:{slot.id}:10"]
     )
 
@@ -112,3 +140,524 @@ async def test_booking_expiration_and_slot_release(db_session):
     
     await db_session.refresh(booking)
     assert booking.status == BookingStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_booking_succeeds(db_session):
+    from app.models.enums import BookingStatus
+    from app.models.user import User
+
+    lane = Lane(number="3", type=LaneType.NORMAL)
+    schedule = Schedule(name="Cancel Schedule")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(10, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+    await db_session.refresh(lane)
+    await db_session.refresh(slot)
+
+    user = User(email="cancel@example.com", hashed_password="pw", full_name="Cancel User")
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    booking = await _create_pending_booking(db_session, user, lane, slot, start_hour=9)
+
+    detail = await booking_service.cancel_reservation(db_session, booking.id, user.id)
+    assert detail.status == BookingStatus.CANCELLED
+
+    await db_session.refresh(booking)
+    assert booking.status == BookingStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_paid_booking_succeeds(db_session):
+    from app.models.enums import BookingStatus
+    from app.models.user import User
+
+    lane = Lane(number="4", type=LaneType.NORMAL)
+    schedule = Schedule(name="Cancel Paid Schedule")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(10, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+    await db_session.refresh(lane)
+    await db_session.refresh(slot)
+
+    user = User(email="paid@example.com", hashed_password="pw", full_name="Paid User")
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    booking = await _create_pending_booking(
+        db_session, user, lane, slot, start_hour=9, status=BookingStatus.PAID
+    )
+
+    detail = await booking_service.cancel_reservation(db_session, booking.id, user.id)
+    assert detail.status == BookingStatus.CANCELLED
+
+    await db_session.refresh(booking)
+    assert booking.status == BookingStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_already_cancelled_booking_is_rejected(db_session):
+    from fastapi import HTTPException
+
+    from app.models.enums import BookingStatus
+    from app.models.user import User
+
+    lane = Lane(number="10", type=LaneType.NORMAL)
+    schedule = Schedule(name="Already Cancelled Schedule")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(10, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+    await db_session.refresh(lane)
+    await db_session.refresh(slot)
+
+    user = User(email="cancelled@example.com", hashed_password="pw", full_name="Cancelled User")
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    booking = await _create_pending_booking(
+        db_session, user, lane, slot, start_hour=9, status=BookingStatus.CANCELLED
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.cancel_reservation(db_session, booking.id, user.id)
+
+    assert excinfo.value.status_code == 400
+    assert "already cancelled" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_of_other_user_is_not_found(db_session):
+    from fastapi import HTTPException
+
+    from app.models.user import User
+
+    lane = Lane(number="5", type=LaneType.NORMAL)
+    schedule = Schedule(name="Cancel Ownership Schedule")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(10, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+    await db_session.refresh(lane)
+    await db_session.refresh(slot)
+
+    owner_user = User(email="owner@example.com", hashed_password="pw", full_name="Owner User")
+    other_user = User(email="other@example.com", hashed_password="pw", full_name="Other User")
+    db_session.add_all([owner_user, other_user])
+    await db_session.commit()
+    await db_session.refresh(owner_user)
+    await db_session.refresh(other_user)
+
+    booking = await _create_pending_booking(db_session, owner_user, lane, slot, start_hour=9)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.cancel_reservation(db_session, booking.id, other_user.id)
+
+    assert excinfo.value.status_code == 404
+
+
+async def _setup_bookable_lane(db_session, lane_number: str):
+    lane = Lane(number=lane_number, type=LaneType.NORMAL)
+    schedule = Schedule(name=f"Past Slot Schedule {lane_number}")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+    await db_session.refresh(lane)
+    await db_session.refresh(slot)
+
+    from app.models.user import User
+    user = User(email=f"past{lane_number}@example.com", hashed_password="pw", full_name="Past User")
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return lane, slot, user
+
+
+@pytest.mark.asyncio
+async def test_cannot_book_past_hour_today(db_session, monkeypatch):
+    from fastapi import HTTPException
+
+    import app.services.booking_service as booking_module
+
+    fixed_now = FIXED_NOW
+    monkeypatch.setattr(booking_module, "localnow", lambda: fixed_now)
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "6")
+    data = BookingCreate(
+        booking_date=fixed_now.date(),
+        slot_keys=[f"{lane.id}:{slot.id}:10"],
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.create_reservation(db_session, user.id, data)
+
+    assert excinfo.value.status_code == 400
+    assert "passed" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_cannot_book_past_date(db_session, monkeypatch):
+    from fastapi import HTTPException
+
+    import app.services.booking_service as booking_module
+
+    fixed_now = FIXED_NOW
+    monkeypatch.setattr(booking_module, "localnow", lambda: fixed_now)
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "7")
+    data = BookingCreate(
+        booking_date=fixed_now.date() - timedelta(days=1),
+        slot_keys=[f"{lane.id}:{slot.id}:16"],
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.create_reservation(db_session, user.id, data)
+
+    assert excinfo.value.status_code == 400
+    assert "past" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_can_book_future_hour_today(db_session, monkeypatch):
+    import app.services.booking_service as booking_module
+
+    fixed_now = FIXED_NOW
+    monkeypatch.setattr(booking_module, "localnow", lambda: fixed_now)
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "8")
+    data = BookingCreate(
+        booking_date=fixed_now.date(),
+        slot_keys=[f"{lane.id}:{slot.id}:16"],
+    )
+
+    booking = await booking_service.create_reservation(db_session, user.id, data)
+    assert booking.id is not None
+
+
+@pytest.mark.asyncio
+async def test_grid_marks_past_hours_unavailable(db_session, monkeypatch):
+    import app.services.infrastructure_service as infra_module
+    from app.services.infrastructure_service import infrastructure_service
+
+    fixed_now = FIXED_NOW
+    monkeypatch.setattr(infra_module, "localnow", lambda: fixed_now)
+
+    lane = Lane(number="9", type=LaneType.NORMAL)
+    schedule = Schedule(name="Grid Schedule")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+
+    db_session.add(DayConfig(day_of_week=fixed_now.weekday(), schedule_id=schedule.id))
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+    await db_session.refresh(lane)
+    await db_session.refresh(slot)
+
+    grid = await infrastructure_service.get_grid_availability(db_session, fixed_now.date())
+    lane_grid = next(lane_data for lane_data in grid if lane_data["lane_id"] == lane.id)
+    availability_by_time = {s["time"]: s["available"] for s in lane_grid["slots"]}
+
+    assert availability_by_time["10:00"] is False
+    assert availability_by_time["15:00"] is False
+    assert availability_by_time["16:00"] is True
+
+
+async def _create_booking(db_session, user, lane, slot, booking_date, status):
+    from app.models.booking import Booking, BookingItem
+
+    booking = Booking(
+        user_id=user.id,
+        booking_date=booking_date,
+        total_price=20.0,
+        status=status,
+        expires_at=utcnow() + timedelta(minutes=10),
+    )
+    db_session.add(booking)
+    await db_session.flush()
+
+    db_session.add(BookingItem(booking_id=booking.id, lane_id=lane.id, price_slot_id=slot.id, start_hour=10))
+    await db_session.commit()
+    return booking
+
+
+@pytest.mark.asyncio
+async def test_get_user_bookings_filter_by_status(db_session):
+    from app.models.enums import BookingStatus
+    from app.services.booking_service import booking_service
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "F1")
+    today = utcnow().date()
+
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PENDING)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.CANCELLED)
+
+    pending = await booking_service.get_user_bookings(db_session, user.id, status=BookingStatus.PENDING)
+    cursed = await booking_service.get_user_bookings(db_session, user.id, status=BookingStatus.CANCELLED)
+
+    assert [b.status for b in pending] == [BookingStatus.PENDING]
+    assert [b.status for b in cursed] == [BookingStatus.CANCELLED]
+
+
+@pytest.mark.asyncio
+async def test_get_user_bookings_filter_by_date_range(db_session):
+    from app.models.enums import BookingStatus
+    from app.services.booking_service import booking_service
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "F2")
+    today = utcnow().date()
+
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
+    await _create_booking(db_session, user, lane, slot, today - timedelta(days=3), BookingStatus.PAID)
+    await _create_booking(db_session, user, lane, slot, today + timedelta(days=5), BookingStatus.PAID)
+
+    result = await booking_service.get_user_bookings(
+        db_session, user.id, from_date=today - timedelta(days=1), to_date=today + timedelta(days=1)
+    )
+
+    assert len(result) == 1
+    assert result[0].booking_date == today
+
+
+@pytest.mark.asyncio
+async def test_my_bookings_endpoint_filters(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.enums import BookingStatus
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "F3")
+    today = utcnow().date()
+
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PENDING)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
+    await _create_booking(db_session, user, lane, slot, today - timedelta(days=2), BookingStatus.CANCELLED)
+
+    token = create_access_token({"sub": str(user.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.get("/api/v1/bookings/my", params={"status": "PENDING"}, headers=headers)
+    assert res.status_code == 200
+    assert [b["status"] for b in res.json()] == ["PENDING"]
+
+    res = await client.get(
+        "/api/v1/bookings/my",
+        params={"from_date": (today - timedelta(days=1)).isoformat(), "to_date": today.isoformat()},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body) == 2
+    assert all(b["status"] != "CANCELLED" for b in body)
+
+    res = await client.get("/api/v1/bookings/my", headers=headers)
+    assert res.status_code == 200
+    assert len(res.json()) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_all_bookings_includes_client_info(db_session):
+    from app.models.enums import BookingStatus
+    from app.services.booking_service import booking_service
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "F4")
+    today = utcnow().date()
+
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
+    await _create_booking(db_session, user, lane, slot, today - timedelta(days=1), BookingStatus.CANCELLED)
+
+    all_bookings = await booking_service.get_all_bookings(db_session)
+    assert len(all_bookings) == 2
+    assert all(b.user_full_name == user.full_name for b in all_bookings)
+    assert all(b.user_email == user.email for b in all_bookings)
+
+    only_cancelled = await booking_service.get_all_bookings(db_session, status=BookingStatus.CANCELLED)
+    assert len(only_cancelled) == 1
+    assert only_cancelled[0].status == BookingStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_staff_cancel_booking_of_another_user(db_session):
+    from app.models.enums import BookingStatus
+    from app.services.booking_service import booking_service
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "F5")
+    booking = await _create_booking(db_session, user, lane, slot, utcnow().date(), BookingStatus.PENDING)
+
+    detail = await booking_service.cancel_booking(db_session, booking.id)
+    assert detail.status == BookingStatus.CANCELLED
+    assert detail.user_full_name == user.full_name
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.cancel_booking(db_session, booking.id)
+    assert excinfo.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_admin_bookings_endpoints_require_staff(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.enums import BookingStatus, UserRole
+    from app.models.user import User
+
+    lane, slot, customer = await _setup_bookable_lane(db_session, "F6")
+    today = utcnow().date()
+    await _create_booking(db_session, customer, lane, slot, today, BookingStatus.PENDING)
+
+    customer_token = create_access_token({"sub": str(customer.id)})
+
+    res = await client.get("/api/v1/admin/bookings", headers={"Authorization": f"Bearer {customer_token}"})
+    assert res.status_code == 403
+
+    staff = User(
+        email="cashier@example.com",
+        hashed_password="pw",
+        full_name="Cashier",
+        role=UserRole.CASHIER,
+    )
+    db_session.add(staff)
+    await db_session.commit()
+
+    staff_token = create_access_token({"sub": str(staff.id)})
+    headers = {"Authorization": f"Bearer {staff_token}"}
+
+    res = await client.get("/api/v1/admin/bookings", params={"status": "PENDING"}, headers=headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body) == 1
+    assert body[0]["user_full_name"] == customer.full_name
+    assert body[0]["user_email"] == customer.email
+
+    booking_id = body[0]["id"]
+    res = await client.delete(f"/api/v1/admin/bookings/{booking_id}", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["status"] == "CANCELLED"
+
+    res = await client.get("/api/v1/admin/bookings", headers=headers)
+    assert res.status_code == 200
+    assert res.json()[0]["status"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_move_booking_to_another_lane(db_session):
+    from app.models.enums import BookingStatus
+    from app.services.booking_service import booking_service
+
+    lane_a, slot_a, user = await _setup_bookable_lane(db_session, "F8")
+
+    lane_b = Lane(number="F9", type=LaneType.NORMAL)
+    schedule_b = Schedule(name="Move Schedule")
+    db_session.add_all([lane_b, schedule_b])
+    await db_session.flush()
+    slot_b = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=30.0, schedule_id=schedule_b.id)
+    db_session.add(slot_b)
+    await db_session.commit()
+    await db_session.refresh(lane_b)
+    await db_session.refresh(slot_b)
+
+    booking = await _create_booking(db_session, user, lane_a, slot_a, utcnow().date(), BookingStatus.PAID)
+
+    moved = await booking_service.move_booking(db_session, booking.id, [f"{lane_b.id}:{slot_b.id}:14"])
+
+    assert moved.status == BookingStatus.PAID
+    assert moved.items[0].lane_id == lane_b.id
+    assert moved.items[0].start_hour == 14
+    assert moved.total_price == 30.0
+
+
+@pytest.mark.asyncio
+async def test_move_booking_to_occupied_slot_fails(db_session):
+    from app.models.enums import BookingStatus, UserRole
+    from fastapi import HTTPException
+    from app.models.user import User
+    from app.services.booking_service import booking_service
+
+    lane_a, slot_a, user = await _setup_bookable_lane(db_session, "FA")
+    lane_b = Lane(number="FB", type=LaneType.NORMAL)
+    schedule_b = Schedule(name="Move Occupied")
+    db_session.add_all([lane_b, schedule_b])
+    await db_session.flush()
+    slot_b = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=25.0, schedule_id=schedule_b.id)
+    db_session.add(slot_b)
+    await db_session.commit()
+    await db_session.refresh(lane_b)
+    await db_session.refresh(slot_b)
+
+    booking = await _create_booking(db_session, user, lane_a, slot_a, utcnow().date(), BookingStatus.PAID)
+
+    # Another user takes the target cell first (on a future date so no past-hour rules apply)
+    target_date = utcnow().date() + timedelta(days=1)
+    other = User(email="other@example.com", hashed_password="pw", full_name="Other", role=UserRole.USER)
+    db_session.add(other)
+    await db_session.commit()
+    await booking_service.create_reservation(
+        db_session, other.id,
+        BookingCreate(booking_date=target_date, slot_keys=[f"{lane_b.id}:{slot_b.id}:14"]),
+    )
+
+    # Move the first booking to that same (now occupied) cell
+    occupied_booking = await _create_booking(
+        db_session, user, lane_a, slot_a, target_date, BookingStatus.PAID
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.move_booking(
+            db_session, occupied_booking.id, [f"{lane_b.id}:{slot_b.id}:14"]
+        )
+    assert excinfo.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_admin_move_booking_endpoint(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.enums import BookingStatus, UserRole
+    from app.models.user import User
+
+    lane_a, slot_a, customer = await _setup_bookable_lane(db_session, "FD")
+
+    lane_b = Lane(number="FE", type=LaneType.NORMAL)
+    schedule_b = Schedule(name="Move Endpoint")
+    db_session.add_all([lane_b, schedule_b])
+    await db_session.flush()
+    slot_b = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=35.0, schedule_id=schedule_b.id)
+    db_session.add(slot_b)
+    await db_session.commit()
+
+    await _create_booking(db_session, customer, lane_a, slot_a, utcnow().date(), BookingStatus.PENDING)
+
+    staff = User(email="move-manager@example.com", hashed_password="pw", full_name="Move Manager", role=UserRole.MANAGER)
+    db_session.add(staff)
+    await db_session.commit()
+
+    token = create_access_token({"sub": str(staff.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    list_res = await client.get("/api/v1/admin/bookings", headers=headers)
+    booking_id = list_res.json()[0]["id"]
+
+    res = await client.post(
+        f"/api/v1/admin/bookings/{booking_id}/move",
+        json={"slot_keys": [f"{lane_b.id}:{slot_b.id}:16"]},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["items"][0]["lane_id"] == lane_b.id
+    assert body["items"][0]["start_hour"] == 16
+    assert body["total_price"] == 35.0

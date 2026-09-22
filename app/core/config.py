@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     API_V1_STR: str = "/api/v1"
 
+    # Business timezone (IANA name) used to validate wall-clock booking hours
+    TIMEZONE: str = "America/Caracas"
+
     # Email Settings
     MAIL_USERNAME: str
     MAIL_PASSWORD: str
@@ -32,6 +35,8 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = [
         "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
         "https://your-frontend-domain.com",
     ]
 

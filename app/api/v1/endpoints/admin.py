@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
@@ -8,9 +9,10 @@ from app.api.dependencies import (
     DbDep,
 )
 from app.core.logging_config import get_logger
+from app.models.enums import BookingStatus
 from app.repositories.user_repository import user_repository
 from app.schemas.analytics import StatsRead
-from app.schemas.booking import BookingRead
+from app.schemas.booking import AdminBookingDetail, BookingMove, BookingRead
 from app.schemas.common import MessageResponse
 from app.schemas.user import UserRead, UserUpdate
 from app.services.analytics_service import analytics_service
@@ -34,6 +36,41 @@ async def confirm_booking(
 ):
     """Confirm that the user has paid (in-person or manual)"""
     return await booking_service.confirm_payment(db, booking_id, background_tasks=background_tasks)
+
+
+@router.get("/bookings", response_model=list[AdminBookingDetail])
+async def list_bookings(
+    db: DbDep,
+    staff: CurrentActiveCashierDep,
+    status: BookingStatus | None = Query(default=None),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+):
+    """List all reservations with the client info (Cashier, Manager or Owner)"""
+    return await booking_service.get_all_bookings(
+        db, status=status, from_date=from_date, to_date=to_date
+    )
+
+
+@router.delete("/bookings/{booking_id}", response_model=AdminBookingDetail)
+async def cancel_booking(
+    booking_id: int,
+    db: DbDep,
+    staff: CurrentActiveCashierDep,
+):
+    """Cancel any reservation (Cashier, Manager or Owner)"""
+    return await booking_service.cancel_booking(db, booking_id)
+
+
+@router.post("/bookings/{booking_id}/move", response_model=AdminBookingDetail)
+async def move_booking(
+    booking_id: int,
+    payload: BookingMove,
+    db: DbDep,
+    staff: CurrentActiveCashierDep,
+):
+    """Move a reservation to different lanes/times (e.g. damaged lane)"""
+    return await booking_service.move_booking(db, booking_id, payload.slot_keys)
 
 # --- USER MANAGEMENT (OWNER ONLY) ---
 
