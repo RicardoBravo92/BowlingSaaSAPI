@@ -15,3 +15,4 @@ class BookingStatus(str, Enum):
     PENDING = "PENDING"
     PAID = "PAID"
     CANCELLED = "CANCELLED"
+    ASSIGNED = "ASSIGNED"

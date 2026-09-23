@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +25,7 @@ class LaneRead(BaseModel):
     id: int
     number: str
     type: LaneType
+    is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -35,6 +36,19 @@ class LaneCreate(BaseModel):
 class LaneUpdate(BaseModel):
     number: str | None = None
     type: LaneType | None = None
+    is_active: bool | None = None
+    maintenance_reason: str | None = None
+
+class MaintenanceRecordRead(BaseModel):
+    id: int
+    lane_id: int
+    lane_number: str
+    reason: str | None
+    started_at: datetime
+    ended_at: datetime | None
+    changed_by: int | None
+
+    model_config = ConfigDict(from_attributes=True)
 
 class PriceSlotUpdate(BaseModel):
     start_time: time | None = None

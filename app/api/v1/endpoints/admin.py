@@ -12,7 +12,7 @@ from app.core.logging_config import get_logger
 from app.models.enums import BookingStatus
 from app.repositories.user_repository import user_repository
 from app.schemas.analytics import StatsRead
-from app.schemas.booking import AdminBookingDetail, BookingMove, BookingRead
+from app.schemas.booking import AdminBookingDetail, BookingAssign, BookingMove, BookingRead
 from app.schemas.common import MessageResponse
 from app.schemas.user import UserRead, UserUpdate
 from app.services.analytics_service import analytics_service
@@ -72,7 +72,28 @@ async def move_booking(
     """Move a reservation to different lanes/times (e.g. damaged lane)"""
     return await booking_service.move_booking(db, booking_id, payload.slot_keys)
 
+
+@router.post("/bookings/assign", response_model=AdminBookingDetail)
+async def assign_booking(
+    payload: BookingAssign,
+    db: DbDep,
+    staff: CurrentActiveCashierDep,
+):
+    """Assign a lane to a user as a gift (ASSIGNED status, no charge, blocks the slot)"""
+    return await booking_service.assign_lane(db, payload)
+
 # --- USER MANAGEMENT (OWNER ONLY) ---
+
+@router.get("/users/search", response_model=list[UserRead])
+async def search_users(
+    db: DbDep,
+    staff: CurrentActiveCashierDep,
+    q: Annotated[str, Query(min_length=1)] = ...,
+    limit: Annotated[int, Query(ge=1, le=25)] = 10,
+):
+    """Search users by full name or email (Cashier, Manager or Owner can pick a client)"""
+    return await user_repository.search(db, q, limit=limit)
+
 
 @router.get("/users", response_model=list[UserRead])
 async def list_users(

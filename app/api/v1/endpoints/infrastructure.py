@@ -1,7 +1,7 @@
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
-from app.api.dependencies import CurrentActiveOwnerDep, DbDep
+from app.api.dependencies import CurrentActiveMaintenanceDep, DbDep
 from app.repositories.infrastructure_repository import infrastructure_repo
 from app.schemas.infrastructure import (
     DayConfigRead,
@@ -9,6 +9,7 @@ from app.schemas.infrastructure import (
     LaneCreate,
     LaneRead,
     LaneUpdate,
+    MaintenanceRecordRead,
     PriceSlotCreate,
     PriceSlotRead,
     PriceSlotUpdate,
@@ -30,18 +31,18 @@ async def get_lanes(db: DbDep):
 async def create_lane(
     lane_in: LaneCreate,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
-    """Create a new bowling lane (Owner Only)"""
+    """Create a new bowling lane (Maintenance/Manager/Owner Only)"""
     return await infrastructure_service.create_lane(db, lane_in)
 
 @router.delete("/lanes/{lane_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_lane(
     lane_id: int,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
-    """Delete a bowling lane (Owner Only)"""
+    """Delete a bowling lane (Maintenance/Manager/Owner Only)"""
     await infrastructure_service.delete_lane(db, lane_id)
 
 @router.patch("/lanes/{lane_id}", response_model=LaneRead)
@@ -49,10 +50,20 @@ async def update_lane(
     lane_id: int,
     lane_in: LaneUpdate,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
-    """Update lane details (Owner Only)"""
-    return await infrastructure_service.update_lane(db, lane_id, lane_in)
+    """Update lane details (Maintenance/Manager/Owner Only)"""
+    return await infrastructure_service.update_lane(db, lane_id, lane_in, changed_by=current_owner.id)
+
+
+@router.get("/lanes/maintenance", response_model=list[MaintenanceRecordRead])
+async def get_maintenance_history(
+    lane_id: int | None = Query(default=None),
+    db: DbDep = None,
+    current_maintenance: CurrentActiveMaintenanceDep = None,
+):
+    """List lane maintenance history, optionally filtered by lane (Staff/Manager/Owner Only)"""
+    return await infrastructure_service.get_maintenance_history(db, lane_id)
 
 
 # --- PRICE SLOTS ---
@@ -61,7 +72,7 @@ async def update_lane(
 async def get_slots_by_schedule(
     schedule_id: int,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """List all slots for a specific schedule"""
     return await infrastructure_repo.get_slots_by_schedule(db, schedule_id)
@@ -70,7 +81,7 @@ async def get_slots_by_schedule(
 async def create_slot(
     slot_in: PriceSlotCreate,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Create a new time slot for a schedule (Owner Only)"""
     return await infrastructure_service.create_slot(db, slot_in)
@@ -80,7 +91,7 @@ async def update_slot(
     slot_id: int,
     slot_in: PriceSlotUpdate,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Update a specific time slot (Owner Only)"""
     return await infrastructure_service.update_slot(db, slot_id, slot_in)
@@ -89,7 +100,7 @@ async def update_slot(
 async def delete_slot(
     slot_id: int,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Delete a price slot (Owner Only)"""
     await infrastructure_service.delete_slot(db, slot_id)
@@ -99,7 +110,7 @@ async def delete_slot(
 @router.get("/schedules", response_model=list[ScheduleRead])
 async def get_schedules(
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """List all pricing schedules"""
     return await infrastructure_service.get_all_schedules(db)
@@ -108,7 +119,7 @@ async def get_schedules(
 async def create_schedule(
     schedule_in: ScheduleCreate,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Create a new pricing schedule"""
     return await infrastructure_service.create_schedule(db, schedule_in)
@@ -117,7 +128,7 @@ async def create_schedule(
 async def delete_schedule(
     schedule_id: int,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Delete a schedule"""
     await infrastructure_service.delete_schedule(db, schedule_id)
@@ -127,7 +138,7 @@ async def delete_schedule(
 @router.get("/days", response_model=list[DayConfigRead])
 async def get_day_configs(
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Get mapping of days of week to schedules"""
     return await infrastructure_service.get_day_configs(db)
@@ -137,7 +148,7 @@ async def update_day_config(
     day_of_week: int,
     config_in: DayConfigUpdate,
     db: DbDep,
-    current_owner: CurrentActiveOwnerDep,
+    current_owner: CurrentActiveMaintenanceDep,
 ):
     """Update which schedule applies to a specific day (0=Mon, 6=Sun)"""
     return await infrastructure_service.update_day_config(db, day_of_week, config_in)

@@ -1,16 +1,29 @@
+import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.models.infrastructure import Lane, Schedule, DayConfig, PriceSlot
+from app.models.infrastructure import Lane, MaintenanceRecord, Schedule, DayConfig, PriceSlot
 from app.repositories.base_repository import BaseRepository
+
+
+def _natural_key(value: str):
+    """Splits string into chunks so '10' sorts after '2', not before."""
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", value)
+        if part != ""
+    ]
 
 class InfrastructureRepository:
     """
     Infrastructure repository manages multiple models (Lane, Schedule, etc.),
     so it doesn't inherit from BaseRepository directly but uses similar patterns.
     """
-    async def get_all_lanes(self, db: AsyncSession):
-        result = await db.execute(select(Lane).order_by(Lane.number))
-        return result.scalars().all()
+    async def get_all_lanes(self, db: AsyncSession, active_only: bool = False):
+        result = await db.execute(select(Lane))
+        lanes = result.scalars().all()
+        if active_only:
+            lanes = [lane for lane in lanes if lane.is_active]
+        return sorted(lanes, key=lambda lane: _natural_key(lane.number))
 
     async def get_lanes_by_ids(self, db: AsyncSession, lane_ids: list[int]):
         """Returns Lane objects for the given IDs"""
@@ -124,5 +137,35 @@ class InfrastructureRepository:
         await db.commit()
         await db.refresh(day_config)
         return day_config
+
+    async def get_open_maintenance(self, db: AsyncSession, lane_id: int):
+        """Returns the currently open (unended) maintenance record for a lane."""
+        result = await db.execute(
+            select(MaintenanceRecord)
+            .where(MaintenanceRecord.lane_id == lane_id, MaintenanceRecord.ended_at.is_(None))
+            .order_by(MaintenanceRecord.started_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_all_maintenance(self, db: AsyncSession, lane_id: int | None = None):
+        """Returns maintenance history, newest first, optionally for one lane."""
+        stmt = select(MaintenanceRecord).order_by(MaintenanceRecord.started_at.desc())
+        if lane_id is not None:
+            stmt = stmt.where(MaintenanceRecord.lane_id == lane_id)
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
+    async def add_maintenance(self, db: AsyncSession, record: MaintenanceRecord):
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+    async def close_maintenance(self, db: AsyncSession, record: MaintenanceRecord):
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return record
 
 infrastructure_repo = InfrastructureRepository()

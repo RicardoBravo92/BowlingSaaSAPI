@@ -29,6 +29,7 @@ class BookingRepository(BaseRepository[Booking]):
         Considers:
         1. PAID reservations.
         2. PENDING reservations that have not yet expired.
+        3. ASSIGNED reservations (gift bookings that block the slot).
         """
         now = utcnow()
 
@@ -40,6 +41,7 @@ class BookingRepository(BaseRepository[Booking]):
                     Booking.booking_date == booking_date,
                     or_(
                         Booking.status == BookingStatus.PAID,
+                        Booking.status == BookingStatus.ASSIGNED,
                         and_(
                             Booking.status == BookingStatus.PENDING,
                             Booking.expires_at > now

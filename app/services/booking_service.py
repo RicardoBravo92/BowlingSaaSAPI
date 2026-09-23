@@ -9,7 +9,8 @@ from app.models.booking import Booking, BookingItem
 from app.models.enums import BookingStatus
 from app.repositories.booking_repository import booking_repo
 from app.repositories.infrastructure_repository import infrastructure_repo
-from app.schemas.booking import AdminBookingDetail, BookingCreate, BookingDetail, BookingItemDetail
+from app.repositories.user_repository import user_repository
+from app.schemas.booking import AdminBookingDetail, BookingAssign, BookingCreate, BookingDetail, BookingItemDetail
 from app.services.email_service import email_service
 
 logger = get_logger(__name__)
@@ -53,6 +54,9 @@ class BookingService:
         
         if len(lanes_by_id) != len(unique_lane_ids):
             raise HTTPException(status_code=400, detail="One or more invalid lanes selected.")
+
+        if any(not lane.is_active for lane in lanes_by_id.values()):
+            raise HTTPException(status_code=400, detail="One or more lanes are under maintenance.")
 
         # Fetch occupied
         occupied = await booking_repo.get_occupied_slots(db, data.booking_date)
@@ -300,6 +304,9 @@ class BookingService:
         if len(lanes_by_id) != len(unique_lane_ids):
             raise HTTPException(status_code=400, detail="One or more invalid lanes selected.")
 
+        if any(not lane.is_active for lane in lanes_by_id.values()):
+            raise HTTPException(status_code=400, detail="One or more lanes are under maintenance.")
+
         unique_slot_ids = list({s["slot_id"] for s in parsed_slots})
         slots = await infrastructure_repo.get_slots_by_ids(db, unique_slot_ids)
         slots_by_id = {s.id: s for s in slots}
@@ -376,6 +383,115 @@ class BookingService:
                 for d in items_to_create
             ],
         )
+
+    async def assign_lane(self, db: AsyncSession, data: BookingAssign) -> AdminBookingDetail:
+        """Staff assigns a lane to a user as a gift (status ASSIGNED, total 0, no payment)."""
+        logger.info(f"Staff attempting to assign lane(s) to user {data.user_id} for date {data.booking_date}")
+
+        user = await user_repository.get(db, data.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        parsed_slots = []
+        unique_lane_ids = set()
+
+        for key in data.slot_keys:
+            try:
+                lane_id_str, slot_id_str, start_hour_str = key.split(":")
+                lane_id = int(lane_id_str)
+                slot_id = int(slot_id_str)
+                start_hour = int(start_hour_str)
+
+                parsed_slots.append({
+                    "lane_id": lane_id,
+                    "slot_id": slot_id,
+                    "start_hour": start_hour
+                })
+                unique_lane_ids.add(lane_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid slot key format. Expected lane:slot:hour")
+
+        if not parsed_slots:
+            raise HTTPException(status_code=400, detail="No slots selected.")
+
+        now = localnow()
+        if data.booking_date < now.date():
+            raise HTTPException(status_code=400, detail="Cannot assign a date in the past.")
+        is_today = data.booking_date == now.date()
+
+        lanes = await infrastructure_repo.get_lanes_by_ids(db, list(unique_lane_ids))
+        lanes_by_id = {L.id: L for L in lanes}
+
+        if len(lanes_by_id) != len(unique_lane_ids):
+            raise HTTPException(status_code=400, detail="One or more invalid lanes selected.")
+
+        if any(not lane.is_active for lane in lanes_by_id.values()):
+            raise HTTPException(status_code=400, detail="One or more lanes are under maintenance.")
+
+        occupied = await booking_repo.get_occupied_slots(db, data.booking_date)
+
+        unique_slot_ids = list({s["slot_id"] for s in parsed_slots})
+        slots = await infrastructure_repo.get_slots_by_ids(db, unique_slot_ids)
+        slots_by_id = {s.id: s for s in slots}
+
+        items_to_create = []
+
+        for p_slot in parsed_slots:
+            lane_id = p_slot["lane_id"]
+            slot_id = p_slot["slot_id"]
+            start_hour = p_slot["start_hour"]
+
+            lane = lanes_by_id[lane_id]
+
+            if slot_id not in slots_by_id:
+                raise HTTPException(status_code=400, detail=f"Invalid slot {slot_id}.")
+
+            slot = slots_by_id[slot_id]
+
+            if start_hour < slot.start_time.hour or start_hour >= slot.end_time.hour:
+                raise HTTPException(status_code=400, detail=f"Invalid hour for slot {slot_id}.")
+
+            if is_today and start_hour <= now.hour:
+                raise HTTPException(status_code=400, detail="Cannot assign a time slot that has already passed today.")
+
+            if (lane_id, slot_id, start_hour) in occupied:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="One or more selected time slots are no longer available."
+                )
+
+            items_to_create.append({
+                "lane_id": lane_id,
+                "price_slot_id": slot_id,
+                "start_hour": start_hour
+            })
+
+        # ASSIGNED bookings never expire and are not charged (total_price = 0)
+        new_booking = Booking(
+            user_id=data.user_id,
+            booking_date=data.booking_date,
+            total_price=0,
+            status=BookingStatus.ASSIGNED,
+            expires_at=utcnow() + timedelta(days=3650)
+        )
+        db.add(new_booking)
+        await db.flush()
+
+        for item_data in items_to_create:
+            item = BookingItem(
+                booking_id=new_booking.id,
+                lane_id=item_data["lane_id"],
+                price_slot_id=item_data["price_slot_id"],
+                start_hour=item_data["start_hour"]
+            )
+            db.add(item)
+
+        await db.commit()
+        await db.refresh(new_booking)
+        logger.info(f"Lane assigned to user {data.user_id}: Booking ID {new_booking.id}")
+
+        detail_booking = await booking_repo.get_with_details(db, new_booking.id)
+        return self._to_admin_detail(detail_booking)
 
     async def get_user_bookings(
         self,

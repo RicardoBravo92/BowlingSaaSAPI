@@ -1,6 +1,7 @@
-from datetime import time
+from datetime import datetime, time
 from typing import List, Optional, TYPE_CHECKING
 from sqlmodel import SQLModel, Field, Relationship
+from app.core.utils import utcnow
 from app.models.enums import LaneType
 
 if TYPE_CHECKING:
@@ -10,7 +11,18 @@ class Lane(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     number: str = Field(index=True)
     type: LaneType = Field(default=LaneType.NORMAL)
+    is_active: bool = Field(default=True)
     items: List["BookingItem"] = Relationship(back_populates="lane")
+
+class MaintenanceRecord(SQLModel, table=True):
+    """One maintenance episode for a lane: created when the lane is disabled,
+    closed when it is reactivated (ended_at null means still under maintenance)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    lane_id: int = Field(foreign_key="lane.id", index=True)
+    reason: Optional[str] = None
+    started_at: datetime = Field(default_factory=utcnow)
+    ended_at: Optional[datetime] = None
+    changed_by: Optional[int] = Field(default=None, foreign_key="user.id")
 
 class Schedule(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

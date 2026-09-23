@@ -1,11 +1,11 @@
 from datetime import date
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.utils import localnow
+from app.core.utils import localnow, utcnow
 from app.repositories.infrastructure_repository import infrastructure_repo
 from app.repositories.booking_repository import booking_repo
-from app.models.infrastructure import Lane, Schedule, PriceSlot, DayConfig
-from app.schemas.infrastructure import LaneCreate, LaneUpdate, PriceSlotUpdate, ScheduleCreate, PriceSlotCreate, DayConfigRead, DayConfigUpdate
+from app.models.infrastructure import Lane, MaintenanceRecord, Schedule, PriceSlot, DayConfig
+from app.schemas.infrastructure import LaneCreate, LaneUpdate, MaintenanceRecordRead, PriceSlotUpdate, ScheduleCreate, PriceSlotCreate, DayConfigRead, DayConfigUpdate
 
 class InfrastructureService:
     async def get_grid_availability(self, db: AsyncSession, booking_date: date):
@@ -16,8 +16,8 @@ class InfrastructureService:
         if not schedule:
             return []
 
-        # 2. Get lanes and slots for that schedule
-        lanes = await infrastructure_repo.get_all_lanes(db)
+        # 2. Get lanes and slots for that schedule (only active lanes are bookable)
+        lanes = await infrastructure_repo.get_all_lanes(db, active_only=True)
         slots = await infrastructure_repo.get_slots_by_schedule(db, schedule.id)
 
         # 3. Get already occupied cells per (lane_id, slot_id, start_hour)
@@ -67,12 +67,55 @@ class InfrastructureService:
             raise HTTPException(status_code=404, detail="Lane not found")
         return await infrastructure_repo.delete_lane(db, lane)
 
-    async def update_lane(self, db: AsyncSession, lane_id: int, lane_in: LaneUpdate):
+    async def update_lane(self, db: AsyncSession, lane_id: int, lane_in: LaneUpdate, changed_by: int | None = None):
         lane = await infrastructure_repo.get_lane(db, lane_id)
         if not lane:
             raise HTTPException(status_code=404, detail="Lane not found")
         update_data = lane_in.model_dump(exclude_unset=True)
-        return await infrastructure_repo.update_lane(db, lane, update_data)
+        was_active = lane.is_active
+        maintenance_reason = update_data.pop("maintenance_reason", None)
+        updated = await infrastructure_repo.update_lane(db, lane, update_data)
+
+        # Track maintenance episodes: disabling opens a record, reactivating closes it.
+        if "is_active" in update_data and update_data["is_active"] != was_active:
+            if update_data["is_active"] is False:
+                open_record = await infrastructure_repo.get_open_maintenance(db, lane_id)
+                if not open_record:
+                    open_record = MaintenanceRecord(
+                        lane_id=lane_id,
+                        reason=maintenance_reason,
+                        changed_by=changed_by,
+                    )
+                    open_record = await infrastructure_repo.add_maintenance(db, open_record)
+            else:
+                open_record = await infrastructure_repo.get_open_maintenance(db, lane_id)
+                if open_record and open_record.ended_at is None:
+                    open_record.ended_at = utcnow()
+                    open_record = await infrastructure_repo.close_maintenance(db, open_record)
+
+        return updated
+
+    async def get_maintenance_history(
+        self,
+        db: AsyncSession,
+        lane_id: int | None = None,
+    ) -> list[MaintenanceRecordRead]:
+        """Returns the maintenance history, optionally filtered by lane."""
+        records = await infrastructure_repo.get_all_maintenance(db, lane_id)
+        lanes = await infrastructure_repo.get_all_lanes(db)
+        lanes_by_id = {lane.id: lane for lane in lanes}
+        return [
+            MaintenanceRecordRead(
+                id=record.id,
+                lane_id=record.lane_id,
+                lane_number=lanes_by_id[record.lane_id].number if record.lane_id in lanes_by_id else str(record.lane_id),
+                reason=record.reason,
+                started_at=record.started_at,
+                ended_at=record.ended_at,
+                changed_by=record.changed_by,
+            )
+            for record in records
+        ]
 
     async def update_slot(self, db: AsyncSession, slot_id: int, slot_in: PriceSlotUpdate):
         slot = await infrastructure_repo.get_slot(db, slot_id)

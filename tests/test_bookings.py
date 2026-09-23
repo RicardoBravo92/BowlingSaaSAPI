@@ -6,6 +6,7 @@ from app.core.utils import utcnow
 from app.models.enums import LaneType, UserRole
 from app.models.infrastructure import DayConfig, Lane, PriceSlot, Schedule
 from app.schemas.booking import BookingCreate
+from app.schemas.infrastructure import LaneUpdate
 from app.services.booking_service import booking_service
 
 # Fixed wall-clock reference used to test past/future hour validation
@@ -661,3 +662,380 @@ async def test_admin_move_booking_endpoint(db_session, client):
     assert body["items"][0]["lane_id"] == lane_b.id
     assert body["items"][0]["start_hour"] == 16
     assert body["total_price"] == 35.0
+
+
+@pytest.mark.asyncio
+async def test_grid_excludes_inactive_lane(db_session):
+    from app.services.infrastructure_service import infrastructure_service
+
+    lane_active = Lane(number="G1", type=LaneType.NORMAL)
+    lane_inactive = Lane(number="G2", type=LaneType.NORMAL, is_active=False)
+    schedule = Schedule(name="Grid Inactive")
+    db_session.add_all([lane_active, lane_inactive, schedule])
+    await db_session.flush()
+
+    target_date = utcnow().date() + timedelta(days=1)
+    db_session.add(DayConfig(day_of_week=target_date.weekday(), schedule_id=schedule.id))
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(11, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+
+    grid = await infrastructure_service.get_grid_availability(db_session, target_date)
+    lane_ids = [lane_data["lane_id"] for lane_data in grid]
+
+    assert lane_active.id in lane_ids
+    assert lane_inactive.id not in lane_ids
+
+
+@pytest.mark.asyncio
+async def test_cannot_book_inactive_lane(db_session):
+    from fastapi import HTTPException
+
+    lane = Lane(number="G3", type=LaneType.NORMAL, is_active=False)
+    schedule = Schedule(name="Inactive Book")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(11, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+
+    from app.models.user import User
+    user = User(email="inactive@example.com", hashed_password="pw", full_name="Inactive User")
+    db_session.add(user)
+    await db_session.commit()
+
+    data = BookingCreate(
+        booking_date=utcnow().date() + timedelta(days=1),
+        slot_keys=[f"{lane.id}:{slot.id}:10"],
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.create_reservation(db_session, user.id, data)
+
+    assert excinfo.value.status_code == 400
+    assert "maintenance" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_cannot_move_booking_to_inactive_lane(db_session):
+    from fastapi import HTTPException
+    from app.models.enums import BookingStatus, UserRole
+    from app.services.booking_service import booking_service
+
+    lane_a, slot_a, customer = await _setup_bookable_lane(db_session, "G4")
+
+    lane_b = Lane(number="G5", type=LaneType.NORMAL, is_active=False)
+    schedule_b = Schedule(name="Inactive Move")
+    db_session.add_all([lane_b, schedule_b])
+    await db_session.flush()
+    slot_b = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=25.0, schedule_id=schedule_b.id)
+    db_session.add(slot_b)
+    await db_session.commit()
+
+    booking = await _create_booking(db_session, customer, lane_a, slot_a, utcnow().date(), BookingStatus.PAID)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.move_booking(db_session, booking.id, [f"{lane_b.id}:{slot_b.id}:14"])
+
+    assert excinfo.value.status_code == 400
+    assert "maintenance" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_owner_toggles_lane_maintenance_endpoint(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.user import User
+    from app.models.enums import UserRole
+
+    lane = Lane(number="G6", type=LaneType.NORMAL)
+    db_session.add(lane)
+    await db_session.commit()
+
+    owner = User(email="owner-infra@example.com", hashed_password="pw", full_name="Owner Infra", role=UserRole.OWNER)
+    db_session.add(owner)
+    await db_session.commit()
+
+    token = create_access_token({"sub": str(owner.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.patch(
+        f"/api/v1/infrastructure/lanes/{lane.id}",
+        json={"is_active": False},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    assert res.json()["is_active"] is False
+
+    res = await client.get(f"/api/v1/infrastructure/lanes", headers=headers)
+    lane_data = next(l for l in res.json() if l["id"] == lane.id)
+    assert lane_data["is_active"] is False
+    assert lane_data["number"] == "G6"
+
+
+@pytest.mark.asyncio
+async def test_toggling_lane_creates_and_closes_maintenance_record(db_session):
+    from app.repositories.infrastructure_repository import infrastructure_repo
+    from app.services.infrastructure_service import infrastructure_service
+
+    lane = Lane(number="H1", type=LaneType.NORMAL)
+    db_session.add(lane)
+    await db_session.commit()
+    await db_session.refresh(lane)
+
+    # Disable lane -> should open a record
+    await infrastructure_service.update_lane(db_session, lane.id, LaneUpdate(is_active=False), changed_by=1)
+    open_record = await infrastructure_repo.get_open_maintenance(db_session, lane.id)
+    assert open_record is not None
+    assert open_record.ended_at is None
+
+    # Re-enable lane -> should close the open record
+    await infrastructure_service.update_lane(db_session, lane.id, LaneUpdate(is_active=True), changed_by=1)
+    open_record = await infrastructure_repo.get_open_maintenance(db_session, lane.id)
+    assert open_record is None
+
+    records = await infrastructure_repo.get_all_maintenance(db_session, lane_id=lane.id)
+    assert len(records) == 1
+    assert records[0].ended_at is not None
+    assert records[0].changed_by == 1
+
+
+@pytest.mark.asyncio
+async def test_maintenance_record_reason_is_saved(db_session):
+    from app.repositories.infrastructure_repository import infrastructure_repo
+    from app.services.infrastructure_service import infrastructure_service
+
+    lane = Lane(number="H2", type=LaneType.NORMAL)
+    db_session.add(lane)
+    await db_session.commit()
+    await db_session.refresh(lane)
+
+    await infrastructure_service.update_lane(
+        db_session, lane.id,
+        LaneUpdate(is_active=False, maintenance_reason="Limpieza y encerado"),
+        changed_by=1,
+    )
+    open_record = await infrastructure_repo.get_open_maintenance(db_session, lane.id)
+    assert open_record.reason == "Limpieza y encerado"
+
+
+@pytest.mark.asyncio
+async def test_maintenance_history_endpoint(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.user import User
+    from app.models.enums import UserRole
+
+    lane = Lane(number="H3", type=LaneType.NORMAL)
+    db_session.add(lane)
+    await db_session.commit()
+
+    staff = User(email="mt-staff@example.com", hashed_password="pw", full_name="MT Staff", role=UserRole.MAINTENANCE)
+    db_session.add(staff)
+    await db_session.commit()
+
+    from app.services.infrastructure_service import infrastructure_service
+    await infrastructure_service.update_lane(db_session, lane.id, LaneUpdate(is_active=False), changed_by=staff.id)
+    await infrastructure_service.update_lane(db_session, lane.id, LaneUpdate(is_active=True), changed_by=staff.id)
+
+    token = create_access_token({"sub": str(staff.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.get("/api/v1/infrastructure/lanes/maintenance", headers=headers)
+    assert res.status_code == 200
+    records = res.json()
+    assert len(records) == 1
+    assert records[0]["lane_id"] == lane.id
+    assert records[0]["lane_number"] == "H3"
+    assert records[0]["ended_at"] is not None
+
+    # Filter by lane_id
+    res = await client.get(f"/api/v1/infrastructure/lanes/maintenance?lane_id={lane.id}", headers=headers)
+    assert len(res.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_assign_lane_creates_assigned_booking_and_blocks_slot(db_session):
+    from app.models.enums import BookingStatus
+    from app.repositories.booking_repository import booking_repo
+    from app.schemas.booking import BookingAssign
+    from app.services.booking_service import booking_service
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "AS1")
+    target_date = utcnow().date() + timedelta(days=1)
+
+    detail = await booking_service.assign_lane(
+        db_session,
+        BookingAssign(user_id=user.id, booking_date=target_date, slot_keys=[f"{lane.id}:{slot.id}:10"]),
+    )
+
+    assert detail.status == BookingStatus.ASSIGNED
+    assert detail.total_price == 0
+    assert detail.user_full_name == user.full_name
+    assert detail.items[0].lane_id == lane.id
+
+    # The assigned slot must be considered occupied
+    occupied = await booking_repo.get_occupied_slots(db_session, target_date)
+    assert (lane.id, slot.id, 10) in occupied
+
+    # A second assignment on the same slot must fail
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.assign_lane(
+            db_session,
+            BookingAssign(user_id=user.id, booking_date=target_date, slot_keys=[f"{lane.id}:{slot.id}:10"]),
+        )
+    assert excinfo.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_assign_lane_rejects_unknown_user(db_session):
+    from fastapi import HTTPException
+    from app.schemas.booking import BookingAssign
+    from app.services.booking_service import booking_service
+
+    lane, slot, _ = await _setup_bookable_lane(db_session, "AS2")
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.assign_lane(
+            db_session,
+            BookingAssign(user_id=999999, booking_date=utcnow().date() + timedelta(days=1), slot_keys=[f"{lane.id}:{slot.id}:10"]),
+        )
+    assert excinfo.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_assign_lane_rejects_inactive_lane(db_session):
+    from fastapi import HTTPException
+    from app.schemas.booking import BookingAssign
+    from app.services.booking_service import booking_service
+
+    lane = Lane(number="AS3", type=LaneType.NORMAL, is_active=False)
+    schedule = Schedule(name="Assign Inactive")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(11, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+
+    from app.models.user import User
+    user = User(email="assign-inactive@example.com", hashed_password="pw", full_name="Assign Inactive")
+    db_session.add(user)
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as excinfo:
+        await booking_service.assign_lane(
+            db_session,
+            BookingAssign(user_id=user.id, booking_date=utcnow().date() + timedelta(days=1), slot_keys=[f"{lane.id}:{slot.id}:10"]),
+        )
+    assert excinfo.value.status_code == 400
+    assert "maintenance" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_assign_does_not_count_as_revenue(db_session):
+    from app.models.enums import BookingStatus
+    from app.schemas.booking import BookingAssign
+    from app.services.analytics_service import analytics_service
+    from app.services.booking_service import booking_service
+
+    lane, slot, user = await _setup_bookable_lane(db_session, "AS4")
+
+    # A normal paid booking adds revenue
+    today = utcnow().date()
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
+
+    # Assign a gifted booking (total 0) for another date
+    await booking_service.assign_lane(
+        db_session,
+        BookingAssign(user_id=user.id, booking_date=today + timedelta(days=1), slot_keys=[f"{lane.id}:{slot.id}:10"]),
+    )
+
+    stats = await analytics_service.get_summary_stats(db_session)
+    assert stats["total_paid_bookings"] == 1
+    assert stats["total_revenue"] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_admin_assign_booking_endpoint(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.user import User
+    from app.models.enums import UserRole
+
+    lane, slot, customer = await _setup_bookable_lane(db_session, "AS5")
+    target_date = utcnow().date() + timedelta(days=1)
+
+    staff = User(email="assign-cashier@example.com", hashed_password="pw", full_name="Assign Cashier", role=UserRole.CASHIER)
+    db_session.add(staff)
+    await db_session.commit()
+
+    token = create_access_token({"sub": str(staff.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.post(
+        "/api/v1/admin/bookings/assign",
+        json={
+            "user_id": customer.id,
+            "booking_date": target_date.isoformat(),
+            "slot_keys": [f"{lane.id}:{slot.id}:12"],
+        },
+        headers=headers,
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ASSIGNED"
+    assert body["total_price"] == 0
+    assert body["user_full_name"] == customer.full_name
+
+
+@pytest.mark.asyncio
+async def test_admin_assign_endpoint_requires_staff(db_session, client):
+    from app.core.security import create_access_token
+
+    lane, slot, customer = await _setup_bookable_lane(db_session, "AS6")
+    target_date = utcnow().date() + timedelta(days=1)
+
+    token = create_access_token({"sub": str(customer.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.post(
+        "/api/v1/admin/bookings/assign",
+        json={
+            "user_id": customer.id,
+            "booking_date": target_date.isoformat(),
+            "slot_keys": [f"{lane.id}:{slot.id}:12"],
+        },
+        headers=headers,
+    )
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_search_users_endpoint(db_session, client):
+    from app.core.security import create_access_token
+    from app.models.user import User
+    from app.models.enums import UserRole
+
+    db_session.add_all([
+        User(email="alex@gmail.com", hashed_password="pw", full_name="Alex Rivas", role=UserRole.USER),
+        User(email="maria@gmail.com", hashed_password="pw", full_name="Maria Perez", role=UserRole.USER),
+    ])
+    await db_session.commit()
+
+    staff = User(email="search-cashier@example.com", hashed_password="pw", full_name="Search Cashier", role=UserRole.CASHIER)
+    db_session.add(staff)
+    await db_session.commit()
+
+    token = create_access_token({"sub": str(staff.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.get("/api/v1/admin/users/search", params={"q": "alex"}, headers=headers)
+    assert res.status_code == 200
+    names = [u["full_name"] for u in res.json()]
+    assert "Alex Rivas" in names
+
+    res = await client.get("/api/v1/admin/users/search", params={"q": "gmail.com"}, headers=headers)
+    assert res.status_code == 200
+    assert len(res.json()) == 2
+
+    res = await client.get("/api/v1/admin/users/search", params={"q": "nobody"}, headers=headers)
+    assert len(res.json()) == 0

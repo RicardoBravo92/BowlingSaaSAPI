@@ -14,6 +14,12 @@ class BookingCreate(BaseModel):
 class BookingMove(BaseModel):
     slot_keys: list[str]  # new target cells for the same booking date
 
+class BookingAssign(BaseModel):
+    """Staff assigns a lane to a user as a gift (ASSIGNED status, no charge)."""
+    user_id: int
+    booking_date: date
+    slot_keys: list[str]  # format: "{lane_id}:{price_slot_id}:{start_hour}"
+
 class BookingItemRead(BaseModel):
     lane_id: int
     price_slot_id: int
