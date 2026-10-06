@@ -65,6 +65,11 @@ class InfrastructureService:
         lane = await infrastructure_repo.get_lane(db, lane_id)
         if not lane:
             raise HTTPException(status_code=404, detail="Lane not found")
+        if await booking_repo.lane_has_booking_items(db, lane_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete a lane that has bookings. Deactivate it instead.",
+            )
         return await infrastructure_repo.delete_lane(db, lane)
 
     async def update_lane(self, db: AsyncSession, lane_id: int, lane_in: LaneUpdate, changed_by: int | None = None):
@@ -74,26 +79,32 @@ class InfrastructureService:
         update_data = lane_in.model_dump(exclude_unset=True)
         was_active = lane.is_active
         maintenance_reason = update_data.pop("maintenance_reason", None)
-        updated = await infrastructure_repo.update_lane(db, lane, update_data)
 
-        # Track maintenance episodes: disabling opens a record, reactivating closes it.
+        # Apply all mutations in memory and track maintenance episodes, then
+        # persist everything in a single atomic commit (no partial updates).
+        for key, value in update_data.items():
+            if value is not None:
+                setattr(lane, key, value)
+
         if "is_active" in update_data and update_data["is_active"] != was_active:
             if update_data["is_active"] is False:
                 open_record = await infrastructure_repo.get_open_maintenance(db, lane_id)
                 if not open_record:
-                    open_record = MaintenanceRecord(
-                        lane_id=lane_id,
-                        reason=maintenance_reason,
-                        changed_by=changed_by,
+                    db.add(
+                        MaintenanceRecord(
+                            lane_id=lane_id,
+                            reason=maintenance_reason,
+                            changed_by=changed_by,
+                        )
                     )
-                    open_record = await infrastructure_repo.add_maintenance(db, open_record)
             else:
                 open_record = await infrastructure_repo.get_open_maintenance(db, lane_id)
                 if open_record and open_record.ended_at is None:
                     open_record.ended_at = utcnow()
-                    open_record = await infrastructure_repo.close_maintenance(db, open_record)
 
-        return updated
+        await db.commit()
+        await db.refresh(lane)
+        return lane
 
     async def get_maintenance_history(
         self,
@@ -135,6 +146,11 @@ class InfrastructureService:
         schedule = await infrastructure_repo.get_schedule(db, schedule_id)
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
+        if await infrastructure_repo.get_slots_by_schedule(db, schedule_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete a schedule that still has price slots.",
+            )
         return await infrastructure_repo.delete_schedule(db, schedule)
 
     async def create_slot(self, db: AsyncSession, slot_in: PriceSlotCreate):
@@ -151,6 +167,11 @@ class InfrastructureService:
         slot = await infrastructure_repo.get_slot(db, slot_id)
         if not slot:
             raise HTTPException(status_code=404, detail="Slot not found")
+        if await booking_repo.slot_has_booking_items(db, slot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete a price slot that has bookings.",
+            )
         return await infrastructure_repo.delete_slot(db, slot)
 
     async def get_day_configs(self, db: AsyncSession):

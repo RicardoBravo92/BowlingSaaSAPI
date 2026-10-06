@@ -133,6 +133,12 @@ async def update_user_role(
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Reject emails that belong to another account (avoid IntegrityError -> 503)
+    if user_in.email is not None and user_in.email.lower() != db_user.email.lower():
+        existing = await user_repository.get_by_email(db, user_in.email.lower())
+        if existing and existing.id != db_user.id:
+            raise HTTPException(status_code=409, detail="Email is already in use.")
+
     return await user_repository.update(db, db_obj=db_user, obj_in=user_in)
 
 # --- MAINTENANCE ---

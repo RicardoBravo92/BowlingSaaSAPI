@@ -1,5 +1,4 @@
 import logging
-import sys
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,11 +11,20 @@ class Settings(BaseSettings):
 
     app_name: str = "Bowling SaaS API"
     app_version: str = "1.0.0"
+    # "development", "staging" or "production"
+    APP_ENV: str = "development"
+    DEBUG: bool = False
 
     DATABASE_URL: str
     SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     API_V1_STR: str = "/api/v1"
+
+    # Frontend base URL used to build password-reset links
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    # When True (behind nginx/load balancer), rate limiting uses X-Forwarded-For
+    BEHIND_PROXY: bool = False
 
     # Business timezone (IANA name) used to validate wall-clock booking hours
     TIMEZONE: str = "America/Caracas"
@@ -54,4 +62,4 @@ def get_settings() -> Settings:
         logger.info("\nExample of a minimal .env file:")
         logger.info("DATABASE_URL=postgresql+asyncpg://user:pass@host/dbname")
         logger.info("SECRET_KEY=supersecretkey")
-        sys.exit(1)
+        raise RuntimeError("Application settings could not be loaded. See logs above.") from e

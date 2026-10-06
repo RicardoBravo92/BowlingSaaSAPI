@@ -7,7 +7,7 @@ settings = get_settings()
 
 
 engine_kwargs = {
-    "echo": True,
+    "echo": settings.DEBUG,
     "pool_pre_ping": True,
     "pool_recycle": 300,
 }

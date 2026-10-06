@@ -4,6 +4,12 @@ from app.models.user import User
 from app.repositories.base_repository import BaseRepository
 from typing import Optional
 
+
+def _escape_like(pattern: str) -> str:
+    """Escapes LIKE wildcards so user-entered % and _ are matched literally."""
+    return pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class UserRepository(BaseRepository[User]):
     async def get_by_email(self, db: AsyncSession, email: str) -> Optional[User]:
         """Fetch a user by email."""
@@ -12,13 +18,13 @@ class UserRepository(BaseRepository[User]):
 
     async def search(self, db: AsyncSession, query: str, limit: int = 10) -> list[User]:
         """Search users by full name or email (case-insensitive partial match)."""
-        q = f"%{query.lower()}%"
+        q = f"%{_escape_like(query.lower())}%"
         stmt = (
             select(User)
             .where(
                 or_(
-                    func.lower(User.full_name).like(q),
-                    func.lower(User.email).like(q)
+                    func.lower(User.full_name).like(q, escape="\\"),
+                    func.lower(User.email).like(q, escape="\\")
                 )
             )
             .order_by(User.full_name)

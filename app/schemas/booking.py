@@ -31,7 +31,7 @@ class BookingRead(BaseModel):
     booking_date: date
     total_price: float
     status: BookingStatus
-    expires_at: datetime
+    expires_at: datetime | None
     items: list[BookingItemRead]
 
     model_config = ConfigDict(from_attributes=True)
@@ -48,7 +48,7 @@ class BookingDetail(BaseModel):
     booking_date: date
     total_price: float
     status: BookingStatus
-    expires_at: datetime
+    expires_at: datetime | None
     created_at: datetime
     items: list[BookingItemDetail]
 
@@ -62,7 +62,7 @@ class AdminBookingDetail(BaseModel):
     booking_date: date
     total_price: float
     status: BookingStatus
-    expires_at: datetime
+    expires_at: datetime | None
     created_at: datetime
     items: list[BookingItemDetail]
 

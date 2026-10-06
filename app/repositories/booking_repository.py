@@ -67,6 +67,18 @@ class BookingRepository(BaseRepository[Booking]):
         result = await db.execute(stmt)
         return result.scalars().all()
 
+    async def lane_has_booking_items(self, db: AsyncSession, lane_id: int) -> bool:
+        """True if any BookingItem references the lane (past or future)."""
+        stmt = select(BookingItem.id).where(BookingItem.lane_id == lane_id).limit(1)
+        result = await db.execute(stmt)
+        return result.first() is not None
+
+    async def slot_has_booking_items(self, db: AsyncSession, slot_id: int) -> bool:
+        """True if any BookingItem references the price slot."""
+        stmt = select(BookingItem.id).where(BookingItem.price_slot_id == slot_id).limit(1)
+        result = await db.execute(stmt)
+        return result.first() is not None
+
     async def get_by_id_and_user(self, db: AsyncSession, booking_id: int, user_id: int) -> Booking | None:
         """Fetches a single booking only if it belongs to the given user."""
         stmt = (

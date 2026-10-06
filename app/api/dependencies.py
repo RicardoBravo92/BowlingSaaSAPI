@@ -31,13 +31,22 @@ async def get_current_user(
 
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        # Only "access" tokens may authenticate. Reset tokens are rejected here.
+        if payload.get("type") != "access":
+            raise credentials_exception
         user_id = payload.get("sub")
         if user_id is None:
             raise credentials_exception
         user = await user_repository.get(db, int(user_id))
-    except (JWTError, TypeError, ValueError):
-        raise credentials_exception
-    if user is None:
+        if user is None:
+            raise credentials_exception
+        # Reject tokens issued before the last password change (session invalidation).
+        iat = payload.get("iat")
+        if user.password_changed_at is not None and (
+            iat is None or iat < user.password_changed_at.timestamp()
+        ):
+            raise credentials_exception
+    except (JWTError, TypeError, ValueError, AttributeError):
         raise credentials_exception
 
     return user

@@ -1,8 +1,13 @@
 from datetime import datetime, time
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import LaneType
+
+
+def _validate_slot_hours(start_time: time, end_time: time) -> None:
+    if end_time <= start_time:
+        raise ValueError("end_time must be after start_time")
 
 
 class PriceSlotRead(BaseModel):
@@ -20,6 +25,11 @@ class PriceSlotCreate(BaseModel):
     price: float = Field(ge=0.0)
     premium_price: float = Field(default=0.0, ge=0.0)
     schedule_id: int
+
+    @model_validator(mode="after")
+    def _hours_are_valid(self):
+        _validate_slot_hours(self.start_time, self.end_time)
+        return self
 
 class LaneRead(BaseModel):
     id: int
@@ -55,6 +65,12 @@ class PriceSlotUpdate(BaseModel):
     end_time: time | None = None
     price: float | None = Field(default=None, ge=0.0)
     premium_price: float | None = Field(default=None, ge=0.0)
+
+    @model_validator(mode="after")
+    def _hours_are_valid(self):
+        if self.start_time is not None and self.end_time is not None:
+            _validate_slot_hours(self.start_time, self.end_time)
+        return self
 
 class ScheduleRead(BaseModel):
     id: int

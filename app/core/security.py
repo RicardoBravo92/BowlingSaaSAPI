@@ -11,16 +11,22 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 ALGORITHM = "HS256"
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
-    """Create JWT access token."""
+def create_access_token(data: dict, expires_delta: timedelta | None = None, token_type: str = "access"):
+    """Create JWT token.
+
+    Every token carries an explicit ``type`` claim ("access" or "reset") and an
+    ``iat`` timestamp. ``iat`` lets us reject tokens issued before a password
+    change, so reset tokens are single-use and old sessions die on reset.
+    """
     to_encode = data.copy()
+    now = datetime.now(UTC)
     if expires_delta:
-        expire = datetime.now(UTC) + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.now(UTC) + timedelta(
+        expire = now + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
-    to_encode.update({"exp": expire})
+    to_encode.update({"type": token_type, "iat": now, "exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 

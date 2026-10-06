@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.infrastructure import Lane, MaintenanceRecord, Schedule, DayConfig, PriceSlot
@@ -19,10 +20,11 @@ class InfrastructureRepository:
     so it doesn't inherit from BaseRepository directly but uses similar patterns.
     """
     async def get_all_lanes(self, db: AsyncSession, active_only: bool = False):
-        result = await db.execute(select(Lane))
-        lanes = result.scalars().all()
+        stmt = select(Lane)
         if active_only:
-            lanes = [lane for lane in lanes if lane.is_active]
+            stmt = stmt.where(Lane.is_active.is_(True))
+        result = await db.execute(stmt)
+        lanes = result.scalars().all()
         return sorted(lanes, key=lambda lane: _natural_key(lane.number))
 
     async def get_lanes_by_ids(self, db: AsyncSession, lane_ids: list[int]):
@@ -66,7 +68,7 @@ class InfrastructureRepository:
         )
         return result.scalars().all()
 
-    async def calculate_total(self, db: AsyncSession, slot_ids: list[int]) -> float:
+    async def calculate_total(self, db: AsyncSession, slot_ids: list[int]) -> Decimal:
         """Sums the actual prices from the DB to prevent fraud from the frontend"""
         result = await db.execute(
             select(PriceSlot.price).where(PriceSlot.id.in_(slot_ids))

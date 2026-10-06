@@ -29,6 +29,7 @@ async def _create_pending_booking(db_session, user, lane, slot, start_hour=0, st
 
     item = BookingItem(
         booking_id=booking.id,
+        booking_date=booking.booking_date,
         lane_id=lane.id,
         price_slot_id=slot.id,
         start_hour=start_hour,
@@ -36,6 +37,67 @@ async def _create_pending_booking(db_session, user, lane, slot, start_hour=0, st
     db_session.add(item)
     await db_session.commit()
     return booking
+
+
+@pytest.mark.asyncio
+async def test_db_unique_constraint_blocks_duplicate_cell(db_session):
+    """DB-level anti-double-booking guard, tested deterministically.
+
+    Even if two concurrent requests both passed the in-memory availability
+    check, the unique constraint (booking_date, lane_id, price_slot_id,
+    start_hour) allows only one row per cell. Inserting a duplicate must raise
+    IntegrityError (mapped to HTTP 409 by the service layer).
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.booking import Booking, BookingItem
+    from app.models.enums import BookingStatus
+    from app.models.user import User
+
+    lane = Lane(number="RC1", type=LaneType.NORMAL)
+    schedule = Schedule(name="Race Schedule")
+    db_session.add_all([lane, schedule])
+    await db_session.flush()
+    slot = PriceSlot(start_time=time(9, 0), end_time=time(20, 0), price=20.0, schedule_id=schedule.id)
+    db_session.add(slot)
+    await db_session.commit()
+
+    user_a = User(email="race-a@example.com", hashed_password="pw", full_name="A")
+    user_b = User(email="race-b@example.com", hashed_password="pw", full_name="B")
+    db_session.add_all([user_a, user_b])
+    await db_session.commit()
+
+    target_date = utcnow().date() + timedelta(days=5)
+
+    async def _booking_with_item(user):
+        booking = Booking(
+            user_id=user.id,
+            booking_date=target_date,
+            total_price=20.0,
+            status=BookingStatus.PENDING,
+            expires_at=utcnow() + timedelta(minutes=10),
+        )
+        db_session.add(booking)
+        await db_session.flush()  # assign booking.id before building the item
+        item = BookingItem(  # noqa: F841 - flushed together with the booking below
+            booking_id=booking.id,
+            booking_date=target_date,
+            lane_id=lane.id,
+            price_slot_id=slot.id,
+            start_hour=10,
+        )
+        db_session.add(item)
+
+    # First reservation (user A) claims the cell
+    await _booking_with_item(user_a)
+    await db_session.commit()
+
+    # Second reservation (user B) attempts the exact same cell in one commit;
+    # the unique constraint must win -> IntegrityError (service maps it to 409).
+    await _booking_with_item(user_b)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
 
 
 @pytest.mark.asyncio
@@ -126,7 +188,12 @@ async def test_booking_expiration_and_slot_release(db_session):
     db_session.add(booking)
     await db_session.flush()
     
-    item = BookingItem(booking_id=booking.id, lane_id=lane.id, price_slot_id=slot.id)
+    item = BookingItem(
+        booking_id=booking.id,
+        booking_date=booking.booking_date,
+        lane_id=lane.id,
+        price_slot_id=slot.id,
+    )
     db_session.add(item)
     await db_session.commit()
 
@@ -381,7 +448,7 @@ async def test_grid_marks_past_hours_unavailable(db_session, monkeypatch):
     assert availability_by_time["16:00"] is True
 
 
-async def _create_booking(db_session, user, lane, slot, booking_date, status):
+async def _create_booking(db_session, user, lane, slot, booking_date, status, start_hour=10):
     from app.models.booking import Booking, BookingItem
 
     booking = Booking(
@@ -394,7 +461,13 @@ async def _create_booking(db_session, user, lane, slot, booking_date, status):
     db_session.add(booking)
     await db_session.flush()
 
-    db_session.add(BookingItem(booking_id=booking.id, lane_id=lane.id, price_slot_id=slot.id, start_hour=10))
+    db_session.add(BookingItem(
+        booking_id=booking.id,
+        booking_date=booking_date,
+        lane_id=lane.id,
+        price_slot_id=slot.id,
+        start_hour=start_hour,
+    ))
     await db_session.commit()
     return booking
 
@@ -407,9 +480,9 @@ async def test_get_user_bookings_filter_by_status(db_session):
     lane, slot, user = await _setup_bookable_lane(db_session, "F1")
     today = utcnow().date()
 
-    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PENDING)
-    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
-    await _create_booking(db_session, user, lane, slot, today, BookingStatus.CANCELLED)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PENDING, start_hour=10)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID, start_hour=11)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.CANCELLED, start_hour=12)
 
     pending = await booking_service.get_user_bookings(db_session, user.id, status=BookingStatus.PENDING)
     cursed = await booking_service.get_user_bookings(db_session, user.id, status=BookingStatus.CANCELLED)
@@ -446,8 +519,8 @@ async def test_my_bookings_endpoint_filters(db_session, client):
     lane, slot, user = await _setup_bookable_lane(db_session, "F3")
     today = utcnow().date()
 
-    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PENDING)
-    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PENDING, start_hour=10)
+    await _create_booking(db_session, user, lane, slot, today, BookingStatus.PAID, start_hour=11)
     await _create_booking(db_session, user, lane, slot, today - timedelta(days=2), BookingStatus.CANCELLED)
 
     token = create_access_token({"sub": str(user.id)})

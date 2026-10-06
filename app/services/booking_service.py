@@ -1,6 +1,8 @@
 from datetime import date, timedelta
+from decimal import Decimal
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging_config import get_logger
@@ -15,31 +17,51 @@ from app.services.email_service import email_service
 
 logger = get_logger(__name__)
 
+# How long a PENDING reservation keeps its cells locked before auto-cancellation
+BOOKING_EXPIRATION_DELTA = timedelta(minutes=10)
+
+
+def _parse_slot_keys(slot_keys: list[str]) -> tuple[list[dict], set[int]]:
+    """Parses "lane:slot:hour" keys into dicts and the set of unique lane ids.
+
+    Rejects malformed keys and duplicate selections (two identical cells in the
+    same request would violate the DB unique constraint).
+    """
+    parsed_slots = []
+    unique_lane_ids = set()
+    seen_keys = set()
+
+    for key in slot_keys:
+        if key in seen_keys:
+            raise HTTPException(
+                status_code=400, detail=f"Duplicate slot selected: {key}"
+            )
+        seen_keys.add(key)
+        try:
+            lane_id_str, slot_id_str, start_hour_str = key.split(":")
+            lane_id = int(lane_id_str)
+            slot_id = int(slot_id_str)
+            start_hour = int(start_hour_str)
+
+            parsed_slots.append({
+                "lane_id": lane_id,
+                "slot_id": slot_id,
+                "start_hour": start_hour
+            })
+            unique_lane_ids.add(lane_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid slot key format. Expected lane:slot:hour")
+
+    if not parsed_slots:
+        raise HTTPException(status_code=400, detail="No slots selected.")
+
+    return parsed_slots, unique_lane_ids
+
 class BookingService:
     async def create_reservation(self, db: AsyncSession, user_id: int, data: BookingCreate):
         logger.info(f"User {user_id} attempting to create multi-lane reservation for date {data.booking_date}")
         
-        parsed_slots = []
-        unique_lane_ids = set()
-        
-        for key in data.slot_keys:
-            try:
-                lane_id_str, slot_id_str, start_hour_str = key.split(":")
-                lane_id = int(lane_id_str)
-                slot_id = int(slot_id_str)
-                start_hour = int(start_hour_str)
-                
-                parsed_slots.append({
-                    "lane_id": lane_id,
-                    "slot_id": slot_id,
-                    "start_hour": start_hour
-                })
-                unique_lane_ids.add(lane_id)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid slot key format. Expected lane:slot:hour")
-
-        if not parsed_slots:
-            raise HTTPException(status_code=400, detail="No slots selected.")
+        parsed_slots, unique_lane_ids = _parse_slot_keys(data.slot_keys)
 
         # Reject dates/hours that are already in the past (venue local time)
         now = localnow()
@@ -66,7 +88,7 @@ class BookingService:
         slots = await infrastructure_repo.get_slots_by_ids(db, unique_slot_ids)
         slots_by_id = {s.id: s for s in slots}
 
-        total_price = 0
+        total_price = Decimal("0")
         items_to_create = []
 
         for p_slot in parsed_slots:
@@ -98,8 +120,11 @@ class BookingService:
                     detail="One or more selected time slots are no longer available."
                 )
 
-            # Get the correct price for the lane type
-            price = slot.premium_price if lane.type.value == "PREMIUM" else slot.price
+            # Get the correct price for the lane type (Decimal-explicit: SQLite may
+            # hand back a float for NUMERIC columns)
+            price = Decimal(
+                slot.premium_price if lane.type.value == "PREMIUM" else slot.price
+            )
             total_price += price
             
             items_to_create.append({
@@ -117,19 +142,36 @@ class BookingService:
             expires_at=utcnow() + timedelta(minutes=10)
         )
         db.add(new_booking)
-        await db.flush() # To obtain the booking ID
 
-        # 5. Create items
-        for item_data in items_to_create:
-            item = BookingItem(
-                booking_id=new_booking.id,
-                lane_id=item_data["lane_id"],
-                price_slot_id=item_data["price_slot_id"],
-                start_hour=item_data["start_hour"]
+        try:
+            await db.flush()  # To obtain the booking ID
+
+            # 5. Create items
+            for item_data in items_to_create:
+                item = BookingItem(
+                    booking_id=new_booking.id,
+                    booking_date=data.booking_date,
+                    lane_id=item_data["lane_id"],
+                    price_slot_id=item_data["price_slot_id"],
+                    start_hour=item_data["start_hour"]
+                )
+                db.add(item)
+
+            await db.commit()
+        except IntegrityError:
+            # Two concurrent requests passed the in-memory availability check but
+            # the unique constraint (booking_date, lane_id, price_slot_id, start_hour)
+            # won. Report it as a conflict so the client can retry or reselect.
+            await db.rollback()
+            logger.warning(
+                f"Booking conflict for user {user_id} on {data.booking_date}: "
+                f"a selected slot was booked by another concurrent request."
             )
-            db.add(item)
+            raise HTTPException(
+                status_code=409,
+                detail="One or more selected time slots are no longer available.",
+            )
 
-        await db.commit()
         await db.refresh(new_booking)
         logger.info(f"Reservation created successfully for user {user_id}: Booking ID {new_booking.id}")
         return new_booking
@@ -148,6 +190,18 @@ class BookingService:
         if booking.status == BookingStatus.PAID:
             logger.info(f"Payment already confirmed for Booking ID: {booking_id}")
             return booking
+
+        # Only pending reservations can be confirmed. CANCELLED bookings (user or
+        # expiration) and ASSIGNED gifts can never become PAID.
+        if booking.status != BookingStatus.PENDING:
+            logger.error(
+                f"Payment confirmation failed: Booking ID {booking_id} is "
+                f"{booking.status.value} and cannot be confirmed."
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot confirm payment for a booking with status {booking.status.value}.",
+            )
 
         booking.status = BookingStatus.PAID
         await db.commit()
@@ -283,20 +337,7 @@ class BookingService:
         if not slot_keys:
             raise HTTPException(status_code=400, detail="No slots selected.")
 
-        parsed_slots = []
-        unique_lane_ids = set()
-
-        for key in slot_keys:
-            try:
-                lane_id_str, slot_id_str, start_hour_str = key.split(":")
-                lane_id = int(lane_id_str)
-                slot_id = int(slot_id_str)
-                start_hour = int(start_hour_str)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid slot key format. Expected lane:slot:hour")
-
-            parsed_slots.append({"lane_id": lane_id, "slot_id": slot_id, "start_hour": start_hour})
-            unique_lane_ids.add(lane_id)
+        parsed_slots, unique_lane_ids = _parse_slot_keys(slot_keys)
 
         lanes = await infrastructure_repo.get_lanes_by_ids(db, list(unique_lane_ids))
         lanes_by_id = {L.id: L for L in lanes}
@@ -315,7 +356,7 @@ class BookingService:
         occupied = await booking_repo.get_occupied_slots(db, booking.booking_date)
         occupied -= {(i.lane_id, i.price_slot_id, i.start_hour) for i in booking.items}
 
-        total_price = 0
+        total_price = Decimal("0")
         items_to_create = []
 
         for p_slot in parsed_slots:
@@ -336,7 +377,9 @@ class BookingService:
             if (lane_id, slot_id, start_hour) in occupied:
                 raise HTTPException(status_code=400, detail="One or more selected time slots are no longer available.")
 
-            price = slot.premium_price if lane.type.value == "PREMIUM" else slot.price
+            price = Decimal(
+                slot.premium_price if lane.type.value == "PREMIUM" else slot.price
+            )
             total_price += price
 
             items_to_create.append({
@@ -345,23 +388,32 @@ class BookingService:
                 "start_hour": start_hour,
             })
 
-        # Replace the booking's items with the new ones
-        for item in booking.items:
-            await db.delete(item)
-        await db.flush()
+        try:
+            # Replace the booking's items with the new ones
+            for item in booking.items:
+                await db.delete(item)
+            await db.flush()
 
-        for item_data in items_to_create:
-            db.add(
-                BookingItem(
-                    booking_id=booking.id,
-                    lane_id=item_data["lane_id"],
-                    price_slot_id=item_data["price_slot_id"],
-                    start_hour=item_data["start_hour"],
+            for item_data in items_to_create:
+                db.add(
+                    BookingItem(
+                        booking_id=booking.id,
+                        booking_date=booking.booking_date,
+                        lane_id=item_data["lane_id"],
+                        price_slot_id=item_data["price_slot_id"],
+                        start_hour=item_data["start_hour"],
+                    )
                 )
-            )
 
-        booking.total_price = total_price
-        await db.commit()
+            booking.total_price = total_price
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.warning(f"Move conflict for Booking ID {booking_id}: target slot was already taken.")
+            raise HTTPException(
+                status_code=409,
+                detail="One or more selected time slots are no longer available.",
+            )
         logger.info(f"Booking ID {booking_id} moved by staff.")
 
         return AdminBookingDetail(
@@ -392,27 +444,7 @@ class BookingService:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        parsed_slots = []
-        unique_lane_ids = set()
-
-        for key in data.slot_keys:
-            try:
-                lane_id_str, slot_id_str, start_hour_str = key.split(":")
-                lane_id = int(lane_id_str)
-                slot_id = int(slot_id_str)
-                start_hour = int(start_hour_str)
-
-                parsed_slots.append({
-                    "lane_id": lane_id,
-                    "slot_id": slot_id,
-                    "start_hour": start_hour
-                })
-                unique_lane_ids.add(lane_id)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid slot key format. Expected lane:slot:hour")
-
-        if not parsed_slots:
-            raise HTTPException(status_code=400, detail="No slots selected.")
+        parsed_slots, unique_lane_ids = _parse_slot_keys(data.slot_keys)
 
         now = localnow()
         if data.booking_date < now.date():
@@ -466,27 +498,41 @@ class BookingService:
                 "start_hour": start_hour
             })
 
-        # ASSIGNED bookings never expire and are not charged (total_price = 0)
+        # ASSIGNED bookings are gifts: never expire (expires_at = None) and free (total 0)
         new_booking = Booking(
             user_id=data.user_id,
             booking_date=data.booking_date,
-            total_price=0,
+            total_price=Decimal("0"),
             status=BookingStatus.ASSIGNED,
-            expires_at=utcnow() + timedelta(days=3650)
+            expires_at=None,
         )
         db.add(new_booking)
-        await db.flush()
 
-        for item_data in items_to_create:
-            item = BookingItem(
-                booking_id=new_booking.id,
-                lane_id=item_data["lane_id"],
-                price_slot_id=item_data["price_slot_id"],
-                start_hour=item_data["start_hour"]
+        try:
+            await db.flush()
+
+            for item_data in items_to_create:
+                item = BookingItem(
+                    booking_id=new_booking.id,
+                    booking_date=data.booking_date,
+                    lane_id=item_data["lane_id"],
+                    price_slot_id=item_data["price_slot_id"],
+                    start_hour=item_data["start_hour"]
+                )
+                db.add(item)
+
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.warning(
+                f"Assign conflict: target slots on {data.booking_date} for user "
+                f"{data.user_id} were taken by another reservation."
             )
-            db.add(item)
+            raise HTTPException(
+                status_code=409,
+                detail="One or more selected time slots are no longer available.",
+            )
 
-        await db.commit()
         await db.refresh(new_booking)
         logger.info(f"Lane assigned to user {data.user_id}: Booking ID {new_booking.id}")
 

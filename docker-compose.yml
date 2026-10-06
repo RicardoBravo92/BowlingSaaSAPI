@@ -7,26 +7,27 @@ services:
     env_file:
       - .env
     environment:
+      # Override the local DATABASE_URL so the container reaches the `db` service
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@db:5432/bowling_saas
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
     restart: always
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # No --reload in containers: dev reload belongs in local dev only
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
   db:
     image: postgres:15-alpine
     container_name: bowling_saas_db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: bowling_saas
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: always
-    env_file:
-      - .env
 
   redis:
     image: redis:7-alpine

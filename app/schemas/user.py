@@ -1,5 +1,5 @@
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.enums import UserRole
 
@@ -7,8 +7,8 @@ from app.models.enums import UserRole
 # Information sent by the user during registration
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
-    full_name: str
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=1, max_length=120)
 
 # Data returned in APIs (Excluding password)
 class UserRead(BaseModel):
@@ -39,4 +39,4 @@ class ForgotPasswordRequest(BaseModel):
 
 class PasswordResetConfirm(BaseModel):
     token: str
-    new_password: str
+    new_password: str = Field(min_length=8, max_length=128)

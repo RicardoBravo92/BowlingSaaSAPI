@@ -1,4 +1,5 @@
 from datetime import datetime, time
+from decimal import Decimal
 from typing import List, Optional, TYPE_CHECKING
 from sqlmodel import SQLModel, Field, Relationship
 from app.core.utils import utcnow
@@ -39,8 +40,8 @@ class PriceSlot(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     start_time: time
     end_time: time
-    price: float
-    premium_price: float = Field(default=0.0)
+    price: Decimal = Field(default=Decimal("0"), max_digits=10, decimal_places=2)
+    premium_price: Decimal = Field(default=Decimal("0"), max_digits=10, decimal_places=2)
     schedule_id: int = Field(foreign_key="schedule.id")
     schedule: Schedule = Relationship(back_populates="price_slots")
     items: List["BookingItem"] = Relationship(back_populates="price_slot")

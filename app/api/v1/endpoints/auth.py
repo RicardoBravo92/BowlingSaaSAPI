@@ -57,7 +57,12 @@ async def get_me(current_user: CurrentUserDep):
 
 
 @router.post("/reset-password", response_model=MessageResponse)
-async def reset_password(data: PasswordResetConfirm, db: DbDep):
+@limiter.limit("5/minute")
+async def reset_password(
+    request: Request,
+    data: PasswordResetConfirm,
+    db: DbDep,
+):
     """
     Step 2: User provides the token from the email and the new password.
     """
